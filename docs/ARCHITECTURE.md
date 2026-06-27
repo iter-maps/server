@@ -94,8 +94,10 @@ lands next (roadmap).
 
 ### `iter-worker` (background tier)
 
-Long-running scheduled jobs: the FL NeTEx→GTFS build (on startup + every 24 h)
-and **GTFS-RT ingestion** (`rt-reliability`, every 30 s) — polls ATAC's
+Long-running scheduled jobs: **FL NeTEx→GTFS** (`fl-gtfs`, on startup + every
+24 h) — a streaming `quick-xml` parser converts the official Lazio NeTEx into a
+routable GTFS for the OTP graph build (ADR 0016) — and **GTFS-RT ingestion**
+(`rt-reliability`, every 30 s) — polls ATAC's
 trip-updates feed, decodes it (a vendored `prost` GTFS-RT subset, no `protoc`),
 and derives validated stop-delay events on the stable (route, direction, stop,
 date) key (ADR 0015). The persistent reliability rollup tier lands next. Jobs are

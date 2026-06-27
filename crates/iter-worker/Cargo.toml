@@ -21,6 +21,9 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 prost = { workspace = true }
+quick-xml = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

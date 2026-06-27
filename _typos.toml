@@ -7,3 +7,5 @@ extend-exclude = ["concept/", ".build-map/", "LICENSES/", "Cargo.lock"]
 LOD = "LOD"
 # Italian domain terms (region data, place names).
 comune = "comune"
+# `flate2` — the DEFLATE crate, not a misspelling of "flat".
+flate = "flate"

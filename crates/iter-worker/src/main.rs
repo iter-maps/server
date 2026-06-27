@@ -1,6 +1,7 @@
 mod gtfs_rt;
 mod job;
 mod jobs;
+mod netex;
 mod scheduler;
 
 use std::path::PathBuf;
@@ -19,11 +20,18 @@ async fn main() -> anyhow::Result<()> {
 
     let http = reqwest::Client::builder()
         .user_agent(concat!("iter-worker/", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
         .build()?;
 
     let jobs: Vec<Box<dyn Job>> = vec![
-        Box::new(jobs::fl_gtfs::FlGtfsBuild { netex_path }),
+        Box::new(jobs::fl_gtfs::FlGtfsBuild {
+            netex_path,
+            // The FL GTFS lands next to the other graph inputs (steps/gtfs.rs
+            // skips netex feeds, leaving this slot for the worker).
+            out_path: data_dir.join("graph/TRENITALIA-FL.gtfs.zip"),
+            netex_url: config::opt("NETEX_URL"),
+            http: http.clone(),
+        }),
         Box::new(jobs::rt_reliability::RtReliability::from_env(http)),
     ];
 

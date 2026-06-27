@@ -60,3 +60,4 @@ a typo) do not need one.
 - [0013](0013-gateway-resolves-region.md) — The gateway resolves the region at startup
 - [0014](0014-pure-rust-overlay-geometry.md) — Pure-Rust overlay geometry (no Python/shapely)
 - [0015](0015-gtfs-rt-ingestion-vendored-prost.md) — GTFS-RT ingestion with a vendored prost subset
+- [0016](0016-fl-netex-to-gtfs-converter.md) — FL NeTEx→GTFS converter in the worker

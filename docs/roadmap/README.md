@@ -43,12 +43,14 @@ flagged per item.
   region routing PBF; the rail-relation export for overlay/FL builders lands with
   the OVERLAY/FL work below.
   Design: concept doc 04 — data-pipeline.
-- **FL NeTEx→GTFS** 🚧 — worker job synthesizing a Trenitalia-FL GTFS feed from
-  CCISS-NAP NeTEx (pull-parse, calendar re-anchor, shape stitching,
-  category/geographic filters); fed into the OTP graph. NAP auto-download is
-  unsolved (manual placement fallback).
-  Design: concept doc 11 — gateway-and-external-providers ·
-  Decision: ADR 0004.
+- **FL NeTEx→GTFS** ✅ done (ADR 0016) — the worker streams the official Lazio
+  NeTEx (quick-xml over gunzip) into a routable GTFS the OTP graph build consumes;
+  proven on the real ~58 MB CCISS dataset (450 stops / 5 routes / 1,594 trips /
+  20,617 stop_times, zero loss). **Remaining:** `UicOperatingPeriod` →
+  `calendar_dates` exceptions, `shapes.txt` stitching from OSM rail, and **NAP
+  auto-download** (login-gated; `NETEX_URL` fetches a reachable file, else it's
+  placed manually).
+  Design: concept doc 11 — gateway-and-external-providers · Decision: ADR 0016.
 
 ## 2. Remaining Rust capabilities
 

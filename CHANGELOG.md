@@ -60,8 +60,12 @@ Commit history.
   gateway (ADR 0010); and the transit overlays generated from the real Rome clip
   (`transit-lines` → 9 line features; `metro-stations` → 443 features: concourse
   concave-hulls + per-direction platform strips + named exits).
-- **Worker** — a graceful-shutdown job scheduler running the FL-GTFS build job
-  and **GTFS-RT ingestion** (`rt-reliability`): polls ATAC's trip-updates feed,
+- **Worker** — a graceful-shutdown job scheduler. **FL NeTEx→GTFS** (`fl-gtfs`):
+  a streaming `quick-xml` parser (over a `flate2` gunzip) converts the official
+  Lazio NeTEx into a routable GTFS the OTP graph build consumes — proven on the
+  real ~58 MB CCISS dataset (450 stops, 5 routes, 1,594 trips, 20,617 stop_times,
+  zero loss; ADR 0016). Plus **GTFS-RT ingestion** (`rt-reliability`): polls
+  ATAC's trip-updates feed,
   decodes it with a vendored `prost` GTFS-RT subset (no `protoc`), and derives
   validated stop-delay events keyed on the stable (route, direction, stop,
   service-date) tuple — not the renumbered `trip_id` (ADR 0015). Proven on the
