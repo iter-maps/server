@@ -17,7 +17,7 @@ Sources: `concept doc 29` §4 and
 | **GTFS — ATAC / Roma Servizi** (static + realtime) | CC-BY 3.0 | `CC-BY-3.0` | `Roma Servizi per la Mobilità S.r.l.` |
 | **GTFS — COTRAL** (Lazio extra-urban bus) | **TBD / undeclared** 🔴 | — | — (must be cleared before public production) |
 | **GTFS — COTRAL-FERRO** (Lazio regional railways) | **TBD / undeclared** 🔴 | — | — (must be cleared before public production) |
-| **Trenitalia FL** (regional trains, NeTEx via CCISS NAP) | **TBD / undeclared** 🔴 | — | — (must be cleared before public production) |
+| **Trenitalia FL** (regional trains, NeTEx via CCISS NAP) | **`no_licence_no_contract`** 🔴 | — | open access via the NAP (EU MMTIS regime) but no explicit reuse/redistribution grant — clear with Regione Lazio before public production |
 | **House numbers (civici)** — Overture / ANNCSU | CC-BY 4.0 | `CC-BY-4.0` | double: `Overture / OpenAddresses` **and** `ISTAT / Agenzia delle Entrate — ANNCSU` |
 | **Glyphs (Noto Sans)** | SIL OFL 1.1 | `OFL-1.1` | bundle license + copyright with the served font files |
 | **Komoot Photon** Italy geocoding dump (derives from OSM) | ODbL 1.0 | `ODbL-1.0` | `© OpenStreetMap contributors` |

@@ -33,14 +33,13 @@ impl Job for FlGtfsBuild {
     }
 
     async fn run(&self) -> anyhow::Result<()> {
-        // Optionally fetch the NeTEx; a failure is a warning (we fall back to a
-        // previously-placed file).
-        if !exists(&self.netex_path).await
-            && let Some(url) = &self.netex_url
-        {
+        // When a URL is set, refresh the NeTEx on every run (the daily cadence
+        // is the refresh) — a failure is a warning, and we fall back to a
+        // previously-placed/fetched file.
+        if let Some(url) = &self.netex_url {
             tracing::info!(url, "fl-gtfs: fetching NeTEx");
             if let Err(e) = download(&self.http, url, &self.netex_path).await {
-                tracing::warn!(error = %e, "fl-gtfs: NeTEx download failed");
+                tracing::warn!(error = %e, "fl-gtfs: NeTEx download failed; using existing file");
             }
         }
 
@@ -79,7 +78,14 @@ async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::R
     let mut tmp = dest.to_path_buf().into_os_string();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    let mut resp = client.get(url).send().await?.error_for_status()?;
+    // The NAP `checkedResource` is large and slow to stream; override the
+    // client's short default with a generous per-request timeout.
+    let mut resp = client
+        .get(url)
+        .timeout(Duration::from_secs(300))
+        .send()
+        .await?
+        .error_for_status()?;
     let mut file = tokio::fs::File::create(&tmp).await?;
     while let Some(chunk) = resp.chunk().await? {
         file.write_all(&chunk).await?;

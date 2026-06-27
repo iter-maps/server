@@ -29,7 +29,14 @@ async fn main() -> anyhow::Result<()> {
             // The FL GTFS lands next to the other graph inputs (steps/gtfs.rs
             // skips netex feeds, leaving this slot for the worker).
             out_path: data_dir.join("graph/TRENITALIA-FL.gtfs.zip"),
-            netex_url: config::opt("NETEX_URL"),
+            // The FL NeTEx auto-downloads from the Italian NAP (CCISS) public
+            // endpoint — RAP Lazio L2 (the L1 superset). Override or set empty
+            // (NETEX_URL=) to use a file placed at GATEWAY_NETEX_PATH instead.
+            netex_url: Some(config::or(
+                "NETEX_URL",
+                "https://www.cciss.it/nap/mmtis/public/api/v1/download/blob/Asset/663391/checkedResource",
+            ))
+            .filter(|u| !u.is_empty()),
             http: http.clone(),
         }),
         Box::new(jobs::rt_reliability::RtReliability::from_env(http)),

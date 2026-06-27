@@ -31,8 +31,10 @@ deps):
 - emit a referentially-complete GTFS zip (agency/stops/routes/calendar/trips/
   stop_times), dropping only rows that can't resolve, written atomically to
   `<graph>/TRENITALIA-FL.gtfs.zip` where the OTP graph build picks it up;
-- the FL job runs on startup + daily; `NETEX_URL`, if set, fetches the file first,
-  else it's placed at `GATEWAY_NETEX_PATH`.
+- the FL job runs on startup + daily and **auto-downloads** the NeTEx from the
+  Italian NAP (CCISS) public endpoint on each run (`NETEX_URL`, default the RAP
+  Lazio L2 asset) — the daily cadence is the refresh; set `NETEX_URL=` empty to
+  use a file placed at `GATEWAY_NETEX_PATH` instead.
 
 ## Consequences
 
@@ -46,8 +48,12 @@ deps):
   window — it does **not** yet expand the `UicOperatingPeriod` bit-patterns into
   `calendar_dates` exceptions; for a single-week window this is faithful, but a
   longer feed with holiday exceptions would need that refinement.
-- **NAP auto-download is unsolved** (login-gated). The job fetches `NETEX_URL`
-  when reachable; otherwise the file is placed manually.
+- **NAP auto-download works**: the CCISS NAP serves the NeTEx over an
+  unauthenticated HTTP GET (no login), so the job fetches it directly. The
+  default pins a stable asset id; if the NAP rotates ids, resolving the asset by
+  filename from the NAP catalog JSON is the documented fallback. The data carries
+  `no_licence_no_contract` (NAP access regime, redistribution unstated — see
+  `DATA_LICENSES.md`).
 - Shapes (`shapes.txt`) are not stitched (OTP routes without them); a future
   refinement can derive them from OSM rail.
 

@@ -62,9 +62,10 @@ Commit history.
   concave-hulls + per-direction platform strips + named exits).
 - **Worker** — a graceful-shutdown job scheduler. **FL NeTEx→GTFS** (`fl-gtfs`):
   a streaming `quick-xml` parser (over a `flate2` gunzip) converts the official
-  Lazio NeTEx into a routable GTFS the OTP graph build consumes — proven on the
-  real ~58 MB CCISS dataset (450 stops, 5 routes, 1,594 trips, 20,617 stop_times,
-  zero loss; ADR 0016). Plus **GTFS-RT ingestion** (`rt-reliability`): polls
+  Lazio NeTEx into a routable GTFS the OTP graph build consumes, auto-downloaded
+  from the Italian NAP (CCISS public endpoint) — proven on the real ~58 MB
+  dataset (450 stops, 5 routes, 1,594 trips, 20,617 stop_times, zero loss; ADR
+  0016). Plus **GTFS-RT ingestion** (`rt-reliability`): polls
   ATAC's trip-updates feed,
   decodes it with a vendored `prost` GTFS-RT subset (no `protoc`), and derives
   validated stop-delay events keyed on the stable (route, direction, stop,
