@@ -43,17 +43,29 @@ jobs:
         with:
           command: check
 
-  hygiene:
-    name: typos · reuse · hadolint
+  # Each hygiene linter gets its own clean checkout: the typos action leaves a
+  # `typos` binary in the workspace, which would otherwise make REUSE (which
+  # lints the whole tree) flag an unlicensed file.
+  typos:
+    name: typos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Typos
-        uses: crate-ci/typos@v1.29.4
-      - name: REUSE compliance
-        uses: fsfe/reuse-action@v5
-      - name: Hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+      - uses: crate-ci/typos@v1.29.4
+
+  reuse:
+    name: reuse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fsfe/reuse-action@v5
+
+  hadolint:
+    name: hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: docker/Dockerfile
 
