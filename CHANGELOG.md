@@ -31,11 +31,15 @@ Commit history.
   Data is placed by service area, not operator. Italy → Lazio → Rome profiles
   included.
 - **Pipeline** — an idempotent step runner (`FORCE_*`/`SKIP_*`, skip-if-present,
-  atomic writes, strict abort) with the HEALTH step.
+  atomic writes, strict abort), region-driven (`ITER_REGION`), with steps: OSM
+  source fetch, basemap tiles via planetiler (clustered PMTiles v3, z0-14), and
+  HEALTH. Proven end-to-end on real planetiler output (real tiles served,
+  go-pmtiles offline extract on the real clustered archive).
 - **Worker** — a graceful-shutdown job scheduler with the FL-GTFS build job.
-- **Containerization** — multi-stage Dockerfiles (gateway/pipeline/worker), a
-  podman/docker compose stack with a dev override, `go-pmtiles` in the gateway
-  image.
+- **Containerization** — multi-stage Dockerfiles, a podman/docker compose stack
+  with a dev override, `go-pmtiles` in the gateway image, and a **data-prep
+  image** (`eclipse-temurin:21-jre` + planetiler 0.10.2 + osmium + go-pmtiles)
+  carrying the pipeline's build toolchain.
 - **CI & governance** — a strict CI (fmt, clippy `-D warnings`, build, test,
   `cargo doc -D warnings`, cargo-deny, typos, REUSE, hadolint, coverage); 124
   tests; AGPL-3.0 + REUSE licensing; the ADR process (ADRs 0001–0008); CLAUDE.md;
@@ -44,7 +48,7 @@ Commit history.
 
 ### Not yet implemented
 
-The data-production pipeline's engine-orchestration steps (OSM clip, planetiler
-tiles, OTP graph, Photon import, overlay geometry, FL NeTEx→GTFS), the external
-engines operating on real data, and the planned forward-looking capabilities —
-all tracked in [`docs/roadmap/`](docs/roadmap/).
+The remaining data-production steps (OSM clip via osmium, OTP graph build,
+Photon import, overlay geometry, FL NeTEx→GTFS), the external engines operating
+on real data, and the planned forward-looking capabilities — all tracked in
+[`docs/roadmap/`](docs/roadmap/).

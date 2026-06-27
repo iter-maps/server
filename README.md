@@ -67,7 +67,8 @@ externalized, regenerable artifacts — so the same code runs as a single
 | Region model (nested profiles, `ITER_REGION`) | ✅ done |
 | `iter-pipeline` runner + `iter-worker` scheduler (frameworks + HEALTH / FL-GTFS) | ✅ frameworks |
 | Containerization (multi-stage Dockerfiles, compose, `go-pmtiles`) + strict CI (124 tests) | ✅ done |
-| Data-pipeline engine steps (OSM/planetiler/OTP/Photon/overlays/NeTEx) | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
+| Data pipeline — OSM fetch + planetiler tiles (region-driven) | ✅ done, proven on real output |
+| Data pipeline — OSM clip, OTP graph, Photon import, overlays, NeTEx | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
 | External engines operational (OTP/Photon with real data) | 🔜 needs the pipeline |
 | Planned forward-looking features (16, 19–28) | 🔜 roadmap |
 
