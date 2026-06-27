@@ -1,0 +1,7 @@
+/target
+/.git
+/data
+# local-only reference material (also git-excluded)
+/concept
+/.build-map
+/.claude

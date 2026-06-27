@@ -1,0 +1,15 @@
+# Dev override: publish host ports for LAN testing. NEVER used in production —
+# the base file is host-port-free by design (P3).
+#
+#   podman compose -f compose.yaml -f compose.dev.yaml up
+
+services:
+  gateway:
+    ports:
+      - "${DEV_GATEWAY_PORT:-8090}:8090"
+  otp:
+    ports:
+      - "${DEV_OTP_PORT:-8080}:8080"
+  photon:
+    ports:
+      - "${DEV_PHOTON_PORT:-2322}:2322"
