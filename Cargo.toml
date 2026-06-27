@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/iter-core", "crates/iter-contracts", "crates/iter-gateway", "crates/iter-pipeline"]
+members = [
+    "crates/iter-core",
+    "crates/iter-contracts",
+    "crates/iter-gateway",
+    "crates/iter-pipeline",
+    "crates/iter-worker",
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -11,7 +17,7 @@ repository = "https://github.com/iter-maps/server"
 authors = ["Iter Maps contributors"]
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "fs", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "fs", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

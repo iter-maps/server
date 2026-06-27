@@ -1,0 +1,23 @@
+mod job;
+mod jobs;
+mod scheduler;
+
+use std::path::PathBuf;
+
+use iter_core::config;
+use job::Job;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    iter_core::telemetry::init("iter-worker");
+
+    let data_dir = PathBuf::from(config::or("DATA_DIR", "/data"));
+    let netex_path = config::opt("GATEWAY_NETEX_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join("netex/trenitalia-fl.netex.xml.gz"));
+
+    let jobs: Vec<Box<dyn Job>> = vec![Box::new(jobs::fl_gtfs::FlGtfsBuild { netex_path })];
+
+    tracing::info!(jobs = jobs.len(), "iter-worker starting");
+    scheduler::run(jobs).await
+}

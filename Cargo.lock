@@ -566,6 +566,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "iter-worker"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "iter-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
