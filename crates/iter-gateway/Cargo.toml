@@ -1,0 +1,25 @@
+[package]
+name = "iter-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Iter Maps edge/BFF: serves tiles, styles, overlays, offline, live-trains and health; reverse-proxies routing and geocoding."
+
+[[bin]]
+name = "iter-gateway"
+path = "src/main.rs"
+
+[dependencies]
+iter-core = { workspace = true }
+iter-contracts = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }

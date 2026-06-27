@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/iter-core", "crates/iter-contracts"]
+members = ["crates/iter-core", "crates/iter-contracts", "crates/iter-gateway"]
 
 [workspace.package]
 version = "0.0.0"
