@@ -1,0 +1,4 @@
+ignored:
+  # Base-image apt packages (ca-certificates, curl) are kept current by the
+  # image's own security updates; pinning them here only rots.
+  - DL3008

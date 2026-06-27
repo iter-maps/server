@@ -1,0 +1,33 @@
+# cargo-deny: supply-chain gate (advisories, licenses, bans, sources).
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "AGPL-3.0-or-later", # our own crates
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CDLA-Permissive-2.0", # bundled IANA tz data (jiff)
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace-internal crates are path deps without a version — not a real wildcard.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
