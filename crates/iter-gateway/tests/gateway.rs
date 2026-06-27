@@ -247,3 +247,22 @@ async fn geocode_proxy_dead_upstream_is_502() {
     let (status, _, _) = send(&app, get("/status")).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
+
+#[tokio::test]
+async fn manifest_reports_artifact_freshness() {
+    let (_d, app) = populated();
+    let (status, ct, body) = send(&app, get("/manifest")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("application/json"));
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["apiVersion"], "1");
+    assert!(v["generatedAt"].is_string());
+    // The tiles fixture exists → updatedAt + a weak etag are present.
+    assert!(v["artifacts"]["tiles"]["updatedAt"].is_string());
+    assert!(
+        v["artifacts"]["tiles"]["etag"]
+            .as_str()
+            .unwrap()
+            .starts_with("W/")
+    );
+}
