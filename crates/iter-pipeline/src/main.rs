@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         Box::new(steps::graph::BuildGraph),
         Box::new(steps::civici::ExtractCivici),
         Box::new(steps::photon::BuildPhotonIndex),
+        Box::new(steps::places::ExtractPlaces),
         Box::new(steps::tiles::BuildTiles),
         Box::new(steps::health::WriteHealth),
     ];

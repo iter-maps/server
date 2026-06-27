@@ -37,6 +37,12 @@ Commit history.
   through the gateway. TTL-cached + single-flighted (ADR 0011). Proven live:
   enriching the Colosseo returned its Italian summary + a CC-BY-SA image served
   through the BFF.
+- **Place correlation** — `/places/related` surfaces the places at a searched
+  civico (the restaurant at "Via Cavour 1") as `related[]`, attaching not
+  deduping. A **PLACES** pipeline step extracts addressed POIs from Overture; the
+  gateway loads them into an in-memory bucket index keyed by an Italian address
+  normalizer (street-type/DUG expansion, accent fold, esponenti, the
+  Firenze/Genova red-vs-black flag, `snc` sentinel). ADR 0012.
 - **Pipeline** — an idempotent step runner (`FORCE_*`/`SKIP_*`, skip-if-present,
   atomic writes, strict abort), region-driven (`ITER_REGION`), with steps: OSM
   source fetch, CLIP (osmium routing-extent clip), GTFS feed fetch, BUILD_CONFIG

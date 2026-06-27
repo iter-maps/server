@@ -5,6 +5,7 @@ use iter_contracts::places::Place;
 
 use crate::cache::TtlCache;
 use crate::config::GatewayConfig;
+use crate::correlate::CorrelationIndex;
 
 /// Shared, cheaply-cloneable handle for axum handlers. The gateway is
 /// stateless across requests (the caches below are derived, disposable upstream
@@ -23,6 +24,8 @@ pub struct AppState {
     pub places: Arc<TtlCache<Place>>,
     /// Concurrency gate for the heavy offline extracts (no queue → 503 BUSY).
     pub offline_gate: Arc<tokio::sync::Semaphore>,
+    /// Build-time addressed-POI index for place correlation (loaded once).
+    pub correlations: Arc<CorrelationIndex>,
 }
 
 impl AppState {
@@ -32,6 +35,11 @@ impl AppState {
             .user_agent(concat!("iter-gateway/", env!("CARGO_PKG_VERSION")))
             .build()?;
         let offline_gate = Arc::new(tokio::sync::Semaphore::new(cfg.offline.max_concurrent));
+        let correlations = Arc::new(CorrelationIndex::load(&cfg.places_path));
+        tracing::info!(
+            addressed_places = correlations.len(),
+            "loaded place correlation index"
+        );
         Ok(Self {
             cfg: Arc::new(cfg),
             http,
@@ -39,6 +47,7 @@ impl AppState {
             stations: Arc::new(TtlCache::new()),
             places: Arc::new(TtlCache::new()),
             offline_gate,
+            correlations,
         })
     }
 }

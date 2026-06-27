@@ -56,3 +56,4 @@ a typo) do not need one.
 - [0009](0009-otp-graph-built-in-pipeline.md) — OTP routing graph built in the pipeline
 - [0010](0010-self-hosted-photon-with-civici-in-index.md) — Self-hosted Photon geocoding with civici baked into the index
 - [0011](0011-place-enrichment-open-first-in-bff.md) — Place enrichment: open-first fusion in the BFF
+- [0012](0012-address-correlation-build-it-yourself.md) — Address correlation: build the address→places index ourselves

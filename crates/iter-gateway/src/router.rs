@@ -5,7 +5,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
 use crate::{
-    enrich, glyphs, health, manifest, offline, overlays, proxy, sprite, styles, tiles, trenitalia,
+    correlate, enrich, glyphs, health, manifest, offline, overlays, proxy, sprite, styles, tiles,
+    trenitalia,
 };
 
 /// Assemble the gateway router. Capability modules (tiles, styles, overlays,
@@ -29,6 +30,7 @@ pub fn build(state: AppState) -> Router {
         // place enrichment (open-first fusion above geocoding)
         .route("/places/enrich", get(enrich::enrich))
         .route("/places/image", get(enrich::image))
+        .route("/places/related", get(correlate::related_places))
         // live-trains (ViaggiaTreno proxy)
         .route(
             "/trenitalia/stations/search",

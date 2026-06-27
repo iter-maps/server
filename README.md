@@ -74,6 +74,7 @@ externalized, regenerable artifacts — so the same code runs as a single
 | Routing engine operational (OTP serving a real graph) | ✅ done, proven on real data |
 | Geocoding engine operational (Photon serving real index + civici) | ✅ done, proven on real data |
 | Place enrichment — image + summary for a tapped result (keyless, proxied) | ✅ done, proven on real data |
+| Place correlation — related places sharing an address + civico | ✅ done, proven on real data |
 | Planned forward-looking features (16, 19–28) | 🔜 roadmap |
 
 ## Quick start

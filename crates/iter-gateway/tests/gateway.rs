@@ -36,6 +36,7 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
             max_concurrent: 3,
         },
         offline_source: data_dir.join("output/tiles/roma.pmtiles"),
+        places_path: data_dir.join("output/places.jsonl"),
         pmtiles_bin: "iter-pmtiles-absent".to_string(),
         data_dir,
     }
@@ -63,6 +64,16 @@ fn populated_state() -> (TempDir, AppState) {
     write(
         &root.join("output/overlays/metro-stations.geojson"),
         br#"{"type":"FeatureCollection","features":[{"type":"Feature"}]}"#,
+    );
+    write(
+        &root.join("output/places.jsonl"),
+        concat!(
+            r#"{"id":"ov:a","name":"Ristorante Cavour","category":"catering.restaurant","address":"Via Cavour 1","city":"Roma","lon":12.49,"lat":41.90}"#,
+            "\n",
+            r#"{"id":"ov:b","name":"Bar Cavour","category":"catering.cafe","address":"V. Cavour 1","city":"Roma","lon":12.491,"lat":41.901}"#,
+            "\n",
+        )
+        .as_bytes(),
     );
     let state = AppState::new(config_for(root.to_path_buf())).unwrap();
     (dir, state)
@@ -357,4 +368,41 @@ async fn manifest_reports_artifact_freshness() {
             .unwrap()
             .starts_with("W/")
     );
+}
+
+#[tokio::test]
+async fn related_places_correlates_by_civico() {
+    let (_d, app) = populated();
+    // The query uses a different street-type form than the indexed POIs
+    // ("Via Cavour" vs "V. Cavour") — the normalizer must still bucket them.
+    let (status, ct, body) = send(
+        &app,
+        get("/places/related?street=Via%20Cavour&housenumber=1&city=Roma"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("application/json"));
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let names: Vec<&str> = v["related"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"Ristorante Cavour"));
+    assert!(names.contains(&"Bar Cavour"));
+    assert_eq!(v["related"][0]["relation"], "sameAddress");
+}
+
+#[tokio::test]
+async fn related_places_unknown_address_is_empty_not_error() {
+    let (_d, app) = populated();
+    let (status, _, body) = send(
+        &app,
+        get("/places/related?street=Via%20Nowhere&housenumber=99&city=Roma"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["related"].as_array().unwrap().len(), 0);
 }

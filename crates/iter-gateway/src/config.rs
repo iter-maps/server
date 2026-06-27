@@ -31,6 +31,8 @@ pub struct GatewayConfig {
     pub sprite_dir: PathBuf,
     pub overlays_dir: PathBuf,
     pub offline: OfflineCaps,
+    /// Build-time addressed-POI index for place correlation (`/places/related`).
+    pub places_path: PathBuf,
     /// The clustered PMTiles archive offline range-extracts read from.
     pub offline_source: PathBuf,
     /// `go-pmtiles` binary used for the range-extract (concept ADR 0010).
@@ -82,6 +84,7 @@ impl GatewayConfig {
                     offline::DEFAULT_MAX_CONCURRENT,
                 ),
             },
+            places_path: dir("PLACES_PATH", &data_dir, "output/places.jsonl"),
             offline_source: config::opt("OFFLINE_PMTILES_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| tiles_dir.join("roma.pmtiles")),

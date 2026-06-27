@@ -97,6 +97,12 @@ impl Context {
         config::flag("CIVICI_ENABLE", self.region.civici.enable.unwrap_or(true))
     }
 
+    /// Extent for the addressed-POI (place-discovery) extract: `PLACES_BBOX`,
+    /// else the civici extent (addresses and the POIs at them share an area).
+    pub fn discovery_bbox(&self) -> Option<String> {
+        config::opt("PLACES_BBOX").or_else(|| self.civici_bbox())
+    }
+
     /// Build a context against the committed region tree, for tests.
     #[cfg(test)]
     pub fn for_test(data_dir: PathBuf, version: &str) -> Self {
