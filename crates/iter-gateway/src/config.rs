@@ -36,6 +36,9 @@ pub struct GatewayConfig {
     pub overlays_dir: PathBuf,
     /// Overlay kinds the resolved region declares (drives the served allowlist).
     pub overlay_kinds: Vec<String>,
+    /// The region's country (first segment of the region path, e.g. `italy`).
+    /// Selects the country-specific drivers — address normalizer today (ADR 0017).
+    pub region_country: String,
     pub offline: OfflineCaps,
     /// Build-time addressed-POI index for place correlation (`/places/related`).
     pub places_path: PathBuf,
@@ -70,6 +73,8 @@ impl GatewayConfig {
             .with_context(|| format!("resolving region '{target}'"))?;
         let tiles_basename = format!("{}.pmtiles", region.id);
         let overlay_kinds: Vec<String> = region.overlays.iter().map(|o| o.kind.clone()).collect();
+        // The country is the root of the region path (`italy/lazio/rome` → `italy`).
+        let region_country = target.split('/').next().unwrap_or_default().to_string();
 
         Ok(Self {
             bind: format!("{host}:{port}").parse()?,
@@ -111,6 +116,7 @@ impl GatewayConfig {
                 .unwrap_or_else(|| tiles_dir.join(&tiles_basename)),
             pmtiles_bin: config::or("OFFLINE_PMTILES_BIN", "pmtiles"),
             overlay_kinds,
+            region_country,
             tiles_basename,
             tiles_dir,
             data_dir,

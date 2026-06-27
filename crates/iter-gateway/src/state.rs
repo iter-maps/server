@@ -35,9 +35,13 @@ impl AppState {
             .user_agent(concat!("iter-gateway/", env!("CARGO_PKG_VERSION")))
             .build()?;
         let offline_gate = Arc::new(tokio::sync::Semaphore::new(cfg.offline.max_concurrent));
-        let correlations = Arc::new(CorrelationIndex::load(&cfg.places_path));
+        // The correlation bucketing is country-specific; pick the driver for the
+        // resolved region's country (ADR 0017).
+        let normalizer = crate::regions::address_normalizer(&cfg.region_country);
+        let correlations = Arc::new(CorrelationIndex::load(&cfg.places_path, normalizer));
         tracing::info!(
             addressed_places = correlations.len(),
+            country = %cfg.region_country,
             "loaded place correlation index"
         );
         Ok(Self {

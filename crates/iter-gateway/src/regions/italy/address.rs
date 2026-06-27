@@ -1,13 +1,27 @@
 //! Italian address normalization — the join key for correlating places at the
-//! same civico (ADR 0012). No open geocoder ships "what's at this address", so
-//! we build the index ourselves; the bucket key must survive the ways Italian
-//! addresses vary: street-type abbreviations (`V.le` = `Viale`), accents,
-//! esponenti (`12/A` = `12a`, `12 bis`), the `snc` ("no number") sentinel, and
-//! the Firenze/Genova red-vs-black civici — where `Via X 1` and `Via X 1 rosso`
-//! are *different* buildings, so the colour must be part of the key.
+//! same civico (ADR 0012). This is the Italy driver behind the generic
+//! [`AddressNormalizer`] trait (ADR 0017): no open geocoder ships "what's at this
+//! address", so we build the index ourselves, and
+//! the bucket key must survive the ways Italian addresses vary: street-type
+//! abbreviations (`V.le` = `Viale`), accents, esponenti (`12/A` = `12a`,
+//! `12 bis`), the `snc` ("no number") sentinel, and the Firenze/Genova
+//! red-vs-black civici — where `Via X 1` and `Via X 1 rosso` are *different*
+//! buildings, so the colour must be part of the key.
 //!
 //! libpostal would be the heavyweight alternative (a ~1.8 GB model); for Italian
 //! streets a focused rule layer is enough and ships in-binary.
+
+use crate::regions::AddressNormalizer;
+
+/// The Italy address-correlation driver. Freeform splitting uses the generic
+/// number-after-street default; bucketing applies the Italian rules below.
+pub struct ItalyNormalizer;
+
+impl AddressNormalizer for ItalyNormalizer {
+    fn bucket_key(&self, street: &str, housenumber: &str, city: &str) -> String {
+        bucket_key(street, housenumber, city)
+    }
+}
 
 /// Canonical Italian street types (DUG), keyed by the de-dotted abbreviation or
 /// full word. Bare `v` is ambiguous (via/viale) — we resolve it to the far more
@@ -33,7 +47,7 @@ fn canonical_dug(token: &str) -> Option<&'static str> {
 
 /// Normalize an Italian street name to a stable join token: fold accents, drop
 /// punctuation, expand the leading street-type, lowercase, collapse whitespace.
-pub fn normalize_street(s: &str) -> String {
+fn normalize_street(s: &str) -> String {
     let cleaned = clean(s);
     let mut tokens = cleaned.split_whitespace();
     let Some(first) = tokens.next() else {
@@ -52,7 +66,7 @@ pub fn normalize_street(s: &str) -> String {
 /// the string into the flag so `1` (black) and `1 rosso` (red) never collide.
 /// `snc` (senza numero civico) becomes a sentinel that should weaken, not key, a
 /// match.
-pub fn normalize_housenumber(s: &str) -> (String, bool) {
+fn normalize_housenumber(s: &str) -> (String, bool) {
     let lower = clean(s);
     if lower.is_empty() || lower == "snc" {
         return ("__snc__".to_string(), false);
@@ -84,7 +98,7 @@ pub fn normalize_housenumber(s: &str) -> (String, bool) {
 
 /// The correlation bucket: `comune | street | number(+colour)`. Two records
 /// share an address iff their keys are equal.
-pub fn bucket_key(street: &str, housenumber: &str, city: &str) -> String {
+fn bucket_key(street: &str, housenumber: &str, city: &str) -> String {
     let (number, red) = normalize_housenumber(housenumber);
     format!(
         "{}|{}|{}{}",
@@ -93,25 +107,6 @@ pub fn bucket_key(street: &str, housenumber: &str, city: &str) -> String {
         number,
         if red { "|rosso" } else { "" }
     )
-}
-
-/// Split an Overture/freeform address ("Via Tripoli 20") into (street, number).
-/// The number is the trailing numeric token (plus its esponente); everything
-/// before it is the street. Returns `None` for the number when there is none.
-pub fn split_freeform(s: &str) -> (String, Option<String>) {
-    let trimmed = s.trim().trim_end_matches([',', ' ']);
-    // Walk back over a trailing "<digits><esponente>" token.
-    if let Some(pos) = trimmed.rfind([' ', ',']) {
-        let (head, tail) = trimmed.split_at(pos);
-        let tail = tail.trim_start_matches([',', ' ']);
-        if tail.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            return (
-                head.trim_end_matches([',', ' ']).to_string(),
-                Some(tail.to_string()),
-            );
-        }
-    }
-    (trimmed.to_string(), None)
 }
 
 /// Lowercase, fold Italian accents, collapse punctuation. Dots are *removed*
@@ -218,20 +213,21 @@ mod tests {
 
     #[test]
     fn splits_freeform_addresses() {
+        // The driver inherits the generic number-after-street split.
         assert_eq!(
-            split_freeform("Via Tripoli 20"),
+            ItalyNormalizer.split_freeform("Via Tripoli 20"),
             ("Via Tripoli".to_string(), Some("20".to_string()))
         );
         assert_eq!(
-            split_freeform("Piazza di Spagna, 31"),
+            ItalyNormalizer.split_freeform("Piazza di Spagna, 31"),
             ("Piazza di Spagna".to_string(), Some("31".to_string()))
         );
         assert_eq!(
-            split_freeform("Largo di Torre Argentina"),
+            ItalyNormalizer.split_freeform("Largo di Torre Argentina"),
             ("Largo di Torre Argentina".to_string(), None)
         );
         // a freeform with a number splits to the same bucket as its parts.
-        let (st, hn) = split_freeform("Via Cavour 1");
+        let (st, hn) = ItalyNormalizer.split_freeform("Via Cavour 1");
         assert_eq!(
             bucket_key(&st, hn.as_deref().unwrap(), "Roma"),
             bucket_key("Via Cavour", "1", "Roma")

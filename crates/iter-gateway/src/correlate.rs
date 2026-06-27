@@ -6,20 +6,23 @@
 //!
 //! Backed by a build-time `places.jsonl` (the PLACES pipeline step extracts
 //! addressed POIs from Overture). The gateway loads it once into an in-memory
-//! bucket index keyed by the normalized address (see [`crate::address`]) and by
-//! brand QID, so a replica answers from memory — the stateless + regenerable
-//! artifact model.
+//! bucket index keyed by the normalized address (via the region's
+//! [`AddressNormalizer`] driver) and by brand
+//! QID, so a replica answers from memory — the stateless + regenerable artifact
+//! model. The index is region-generic; the country-specific bucketing comes from
+//! the injected normalizer (ADR 0017).
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
 use iter_contracts::places::{LonLat, Related, Relation};
 use serde::{Deserialize, Serialize};
 
-use crate::address::{bucket_key, split_freeform};
 use crate::http::ApiResult;
+use crate::regions::AddressNormalizer;
 use crate::state::AppState;
 
 /// One addressed place from the build-time extract.
@@ -41,34 +44,48 @@ pub struct Poi {
 }
 
 /// In-memory correlation index: address bucket → places, brand QID → places.
-#[derive(Default)]
+/// Holds the region's address normalizer so build-time bucketing and query-time
+/// lookup always agree.
 pub struct CorrelationIndex {
     by_address: HashMap<String, Vec<Poi>>,
     by_brand: HashMap<String, Vec<Poi>>,
+    normalizer: Arc<dyn AddressNormalizer>,
 }
 
 impl CorrelationIndex {
     /// Build the index from `places.jsonl`. A missing file yields an empty index
     /// (correlation simply returns nothing) — the surface degrades, never fails.
-    pub fn load(path: &Path) -> Self {
+    pub fn load(path: &Path, normalizer: Arc<dyn AddressNormalizer>) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else {
             tracing::info!(path = %path.display(), "no places index; correlation disabled");
-            return Self::default();
+            return Self::empty(normalizer);
         };
         let pois = text
             .lines()
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str::<Poi>(l).ok());
-        Self::from_pois(pois)
+        Self::from_pois(pois, normalizer)
     }
 
-    fn from_pois(pois: impl IntoIterator<Item = Poi>) -> Self {
-        let mut idx = Self::default();
+    fn empty(normalizer: Arc<dyn AddressNormalizer>) -> Self {
+        Self {
+            by_address: HashMap::new(),
+            by_brand: HashMap::new(),
+            normalizer,
+        }
+    }
+
+    fn from_pois(
+        pois: impl IntoIterator<Item = Poi>,
+        normalizer: Arc<dyn AddressNormalizer>,
+    ) -> Self {
+        let mut idx = Self::empty(normalizer.clone());
         for poi in pois {
             if let Some(addr) = &poi.address {
-                let (street, number) = split_freeform(addr);
+                let (street, number) = normalizer.split_freeform(addr);
                 if let Some(number) = number {
-                    let key = bucket_key(&street, &number, poi.city.as_deref().unwrap_or(""));
+                    let key =
+                        normalizer.bucket_key(&street, &number, poi.city.as_deref().unwrap_or(""));
                     idx.by_address.entry(key).or_default().push(poi.clone());
                 }
             }
@@ -98,7 +115,7 @@ impl CorrelationIndex {
         city: &str,
         anchor: Option<LonLat>,
     ) -> Vec<Related> {
-        let key = bucket_key(street, housenumber, city);
+        let key = self.normalizer.bucket_key(street, housenumber, city);
         self.by_address
             .get(&key)
             .into_iter()
@@ -188,6 +205,11 @@ pub async fn related_places(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regions::italy::address::ItalyNormalizer;
+
+    fn it() -> Arc<dyn AddressNormalizer> {
+        Arc::new(ItalyNormalizer)
+    }
 
     fn poi(id: &str, name: &str, addr: &str, brand: Option<&str>) -> Poi {
         Poi {
@@ -204,11 +226,14 @@ mod tests {
 
     #[test]
     fn correlates_places_at_the_same_civico() {
-        let idx = CorrelationIndex::from_pois([
-            poi("a", "Ristorante Cavour", "Via Cavour 1", None),
-            poi("b", "Bar Cavour", "V. Cavour 1", None), // abbreviated → same bucket
-            poi("c", "Altrove", "Via Merulana 10", None),
-        ]);
+        let idx = CorrelationIndex::from_pois(
+            [
+                poi("a", "Ristorante Cavour", "Via Cavour 1", None),
+                poi("b", "Bar Cavour", "V. Cavour 1", None), // abbreviated → same bucket
+                poi("c", "Altrove", "Via Merulana 10", None),
+            ],
+            it(),
+        );
         // query with a different abbreviation still hits the bucket.
         let r = idx.at_address("Via Cavour", "1", "Roma", None);
         let names: Vec<&str> = r.iter().map(|x| x.name.as_str()).collect();
@@ -220,17 +245,20 @@ mod tests {
 
     #[test]
     fn unknown_address_returns_empty() {
-        let idx = CorrelationIndex::from_pois([poi("a", "X", "Via Cavour 1", None)]);
+        let idx = CorrelationIndex::from_pois([poi("a", "X", "Via Cavour 1", None)], it());
         assert!(idx.at_address("Via Nowhere", "99", "Roma", None).is_empty());
     }
 
     #[test]
     fn same_brand_groups_a_chain() {
-        let idx = CorrelationIndex::from_pois([
-            poi("a", "Caffè 1", "Via Cavour 1", Some("Q608427")),
-            poi("b", "Caffè 2", "Via Nazionale 5", Some("Q608427")),
-            poi("c", "Other", "Via Cavour 1", None),
-        ]);
+        let idx = CorrelationIndex::from_pois(
+            [
+                poi("a", "Caffè 1", "Via Cavour 1", Some("Q608427")),
+                poi("b", "Caffè 2", "Via Nazionale 5", Some("Q608427")),
+                poi("c", "Other", "Via Cavour 1", None),
+            ],
+            it(),
+        );
         let r = idx.same_brand("Q608427", None);
         assert_eq!(r.len(), 2);
         assert!(r.iter().all(|x| x.relation == Relation::SameBrand));
@@ -238,7 +266,7 @@ mod tests {
 
     #[test]
     fn anchor_adds_distance() {
-        let idx = CorrelationIndex::from_pois([poi("a", "X", "Via Cavour 1", None)]);
+        let idx = CorrelationIndex::from_pois([poi("a", "X", "Via Cavour 1", None)], it());
         let r = idx.at_address(
             "Via Cavour",
             "1",
@@ -253,7 +281,7 @@ mod tests {
 
     #[test]
     fn pois_without_a_number_are_not_address_indexed() {
-        let idx = CorrelationIndex::from_pois([poi("a", "Park", "Largo Argentina", None)]);
+        let idx = CorrelationIndex::from_pois([poi("a", "Park", "Largo Argentina", None)], it());
         assert!(idx.is_empty());
     }
 }

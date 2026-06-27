@@ -61,3 +61,4 @@ a typo) do not need one.
 - [0014](0014-pure-rust-overlay-geometry.md) — Pure-Rust overlay geometry (no Python/shapely)
 - [0015](0015-gtfs-rt-ingestion-vendored-prost.md) — GTFS-RT ingestion with a vendored prost subset
 - [0016](0016-fl-netex-to-gtfs-converter.md) — FL NeTEx→GTFS converter in the worker
+- [0017](0017-region-drivers-config-and-code.md) — Region specifics: config-driven where possible, drivers where code is needed

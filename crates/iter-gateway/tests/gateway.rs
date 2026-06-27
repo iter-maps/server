@@ -31,6 +31,7 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
         sprite_dir: data_dir.join("static/sprite"),
         overlays_dir: data_dir.join("output/overlays"),
         overlay_kinds: vec!["metro-stations".to_string(), "transit-lines".to_string()],
+        region_country: "italy".to_string(),
         health_path: data_dir.join("output/health.json"),
         offline: OfflineCaps {
             max_area_deg2: 6.0,
