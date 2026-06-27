@@ -52,15 +52,10 @@ unbuilt; tracked here so the orchestration boundary stays explicit.
 
 Rust-native surfaces. The gateway already serves tiles, styles, glyphs, sprite,
 overlays, client health + freshness manifest, **live-trains** (ViaggiaTreno
-proxy with TTL cache + single-flight), and **offline extract**; it
-reverse-proxies routing/geocoding. The pipeline and worker frameworks are in
-place. What remains:
+proxy with TTL cache + single-flight), and **offline extract + bundle**
+(go-pmtiles in the gateway image); it reverse-proxies routing/geocoding. The
+pipeline and worker frameworks are in place. What remains:
 
-- **Offline bundle** — `GET /offline/bundle`: the extract endpoint is done; the
-  bundle still needs the zip assembly (area.pmtiles + styles rewritten to
-  `area.pmtiles` + glyphs + sprite + overlays + `manifest.json`, STORE zip).
-  Design: concept doc 07 — basemap-and-tiles,
-  concept doc 02-api-contracts/offline · Decision: repo ADR 0007.
 - **Live-trains live verification** — the proxy, cache, normalization, and
   date-param are built and unit-tested, but the exact ViaggiaTreno JSON field
   names and the `Date.toString()` date-param are reconstructed from the design

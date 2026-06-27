@@ -20,6 +20,13 @@ ENV DATA_DIR=/data
 # USER 10001
 
 FROM runtime AS gateway
+# go-pmtiles for the offline range-extract (concept ADR 0010 / repo ADR 0007).
+ARG PMTILES_VERSION=1.30.3
+RUN curl -fsSL -o /tmp/pmtiles.tgz \
+      "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz" \
+ && tar -xzf /tmp/pmtiles.tgz -C /usr/local/bin pmtiles \
+ && rm /tmp/pmtiles.tgz \
+ && pmtiles version
 COPY --from=builder /build/target/release/iter-gateway /usr/local/bin/iter-gateway
 EXPOSE 8090
 ENTRYPOINT ["iter-gateway"]
