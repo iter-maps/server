@@ -1,0 +1,16 @@
+name = "Italy"
+
+# All-Italy basemap + geocoding live at the country root and are shared by every
+# descendant region. The transit clip is defined lower down (decoupled extents).
+# A small host can shrink the basemap at deploy time (PMTILES_BOUNDS).
+[extents]
+basemap = "6.6,35.3,18.6,47.1"
+
+[geocoding]
+photon_dump = "https://download1.graphhopper.com/public/europe/italy/photon-dump-italy-1.0-latest.jsonl.zst"
+country_codes = "it"
+languages = "it,en"
+
+# National live-train boards (Trenitalia, via the ViaggiaTreno API).
+[live_trains]
+provider = "viaggiatreno"

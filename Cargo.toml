@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/iter-core",
     "crates/iter-contracts",
+    "crates/iter-region",
     "crates/iter-gateway",
     "crates/iter-pipeline",
     "crates/iter-worker",
@@ -35,9 +36,11 @@ jiff = "0.2"
 async-trait = "0.1"
 tempfile = "3"
 zip = { version = "2", default-features = false }
+toml = "0.8"
 
 iter-core = { path = "crates/iter-core" }
 iter-contracts = { path = "crates/iter-contracts" }
+iter-region = { path = "crates/iter-region" }
 
 [profile.release]
 opt-level = 3

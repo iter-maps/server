@@ -1,0 +1,29 @@
+name = "Lazio"
+
+# The transit routing clip (and overlay extent) for this region.
+[extents]
+routing = "11.3,41.1,14.05,43.35"
+overlay = "11.3,41.1,14.05,43.35"
+
+# ViaggiaTreno region code for the default station board (Lazio = 5, not ISTAT).
+[live_trains]
+region_code = 5
+
+# Regional bus + rail. FL is Trenitalia-operated but is Lazio-*regional* service,
+# so it belongs to this node — data is placed by service area, not operator
+# (ADR 0008). Licenses TBD: must be cleared or shipped disabled before public
+# production.
+[[feeds]]
+id = "COTRAL"
+url = "https://travel.mob.cotralspa.it:4443/GTFS/GTFS_COTRAL.zip"
+insecure = true
+
+[[feeds]]
+id = "COTRAL-FERRO"
+url = "https://travel.mob.cotralspa.it:4443/GTFS/GTFS_FERRO.zip"
+insecure = true
+
+[[feeds]]
+id = "TRENITALIA-FL"
+source = "netex"
+optional = true

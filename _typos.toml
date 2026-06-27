@@ -5,3 +5,5 @@ extend-exclude = ["concept/", ".build-map/", "LICENSES/", "Cargo.lock"]
 [default.extend-words]
 # Level-of-detail map tiers, not a misspelling of "load".
 LOD = "LOD"
+# Italian domain terms (region data, place names).
+comune = "comune"
