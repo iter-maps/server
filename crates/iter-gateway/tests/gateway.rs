@@ -20,6 +20,8 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
         // Dead ports: proxy calls fail fast with connection-refused.
         otp_url: "http://127.0.0.1:1".to_string(),
         photon_url: "http://127.0.0.1:1".to_string(),
+        viaggiatreno_url: "http://127.0.0.1:1".to_string(),
+        trenitalia_region: 5,
         upstream_timeout: Duration::from_secs(2),
         version: "0.0.0-test".to_string(),
         tiles_dir: data_dir.join("output/tiles"),
@@ -246,6 +248,34 @@ async fn geocode_proxy_dead_upstream_is_502() {
     let (_d, app) = populated();
     let (status, _, _) = send(&app, get("/status")).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn trenitalia_search_too_short_is_400() {
+    let (_d, app) = populated();
+    let (status, _, _) = send(&app, get("/trenitalia/stations/search?q=a")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn trenitalia_search_valid_reaches_dead_upstream() {
+    let (_d, app) = populated();
+    let (status, _, _) = send(&app, get("/trenitalia/stations/search?q=roma")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn trenitalia_departures_bad_station_is_400() {
+    let (_d, app) = populated();
+    let (status, _, _) = send(&app, get("/trenitalia/departures?station=nope")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn trenitalia_departures_valid_reaches_dead_upstream() {
+    let (_d, app) = populated();
+    let (status, _, _) = send(&app, get("/trenitalia/departures?station=S08409")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

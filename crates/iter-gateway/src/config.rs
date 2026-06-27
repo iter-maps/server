@@ -12,6 +12,10 @@ pub struct GatewayConfig {
     pub otp_url: String,
     /// Internal URL of the Photon geocoder.
     pub photon_url: String,
+    /// ViaggiaTreno base (RFI's unofficial live-train API).
+    pub viaggiatreno_url: String,
+    /// Default ViaggiaTreno region code for the station list (Lazio = 5).
+    pub trenitalia_region: i64,
     /// Upstream request timeout.
     pub upstream_timeout: std::time::Duration,
     /// Reported in the client health document.
@@ -36,6 +40,11 @@ impl GatewayConfig {
             bind: format!("{host}:{port}").parse()?,
             otp_url: config::or("OTP_URL", "http://otp:8080"),
             photon_url: config::or("PHOTON_URL", "http://photon:2322"),
+            viaggiatreno_url: config::or(
+                "VIAGGIATRENO_URL",
+                "http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno",
+            ),
+            trenitalia_region: config::parse("TRENITALIA_REGION", 5),
             upstream_timeout: std::time::Duration::from_secs(config::parse(
                 "UPSTREAM_TIMEOUT_SECS",
                 30,

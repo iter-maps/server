@@ -2,6 +2,7 @@
 //! binary (`main.rs`) is a thin wrapper over `router::build`, so the full
 //! router is integration-testable via `tower`'s `oneshot`.
 
+pub mod cache;
 pub mod config;
 pub mod glyphs;
 pub mod health;
@@ -14,3 +15,4 @@ pub mod sprite;
 pub mod state;
 pub mod styles;
 pub mod tiles;
+pub mod trenitalia;
