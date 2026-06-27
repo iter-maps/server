@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use iter_contracts::live_trains::{BoardEntry, Station};
+use iter_contracts::places::Place;
 
 use crate::cache::TtlCache;
 use crate::config::GatewayConfig;
@@ -17,6 +18,9 @@ pub struct AppState {
     pub boards: Arc<TtlCache<Vec<BoardEntry>>>,
     /// TTL + single-flight cache for station lookups.
     pub stations: Arc<TtlCache<Vec<Station>>>,
+    /// TTL + single-flight cache for enriched places (facts change slowly; this
+    /// also shields the rate-limited Wikimedia upstreams).
+    pub places: Arc<TtlCache<Place>>,
     /// Concurrency gate for the heavy offline extracts (no queue → 503 BUSY).
     pub offline_gate: Arc<tokio::sync::Semaphore>,
 }
@@ -33,6 +37,7 @@ impl AppState {
             http,
             boards: Arc::new(TtlCache::new()),
             stations: Arc::new(TtlCache::new()),
+            places: Arc::new(TtlCache::new()),
             offline_gate,
         })
     }

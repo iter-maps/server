@@ -4,6 +4,7 @@
 
 pub mod cache;
 pub mod config;
+pub mod enrich;
 pub mod glyphs;
 pub mod health;
 pub mod http;

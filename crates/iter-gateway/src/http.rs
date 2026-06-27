@@ -9,6 +9,7 @@ use iter_core::ApiError;
 
 /// Wraps [`ApiError`] so handlers can `return Err(..)` and get the
 /// `{error:{code,message,details?}}` envelope with the right status.
+#[derive(Debug)]
 pub struct ApiErr(pub ApiError);
 
 impl IntoResponse for ApiErr {

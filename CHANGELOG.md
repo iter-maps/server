@@ -30,6 +30,13 @@ Commit history.
   resolved root→leaf into one effective config; `ITER_REGION` selects the target.
   Data is placed by service area, not operator. Italy → Lazio → Rome profiles
   included.
+- **Place enrichment** — a keyless BFF surface above geocoding: `/places/enrich`
+  fuses Wikipedia (summary + thumbnail + the Wikidata QID), Wikidata (`P18`
+  image), and Wikimedia Commons (license + author) into the normalized `Place`
+  DTO with per-field provenance; `/places/image` proxies the Commons image
+  through the gateway. TTL-cached + single-flighted (ADR 0011). Proven live:
+  enriching the Colosseo returned its Italian summary + a CC-BY-SA image served
+  through the BFF.
 - **Pipeline** — an idempotent step runner (`FORCE_*`/`SKIP_*`, skip-if-present,
   atomic writes, strict abort), region-driven (`ITER_REGION`), with steps: OSM
   source fetch, CLIP (osmium routing-extent clip), GTFS feed fetch, BUILD_CONFIG

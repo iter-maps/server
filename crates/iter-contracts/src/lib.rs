@@ -7,5 +7,6 @@ pub mod geo;
 pub mod health;
 pub mod live_trains;
 pub mod offline;
+pub mod places;
 
 pub use geo::BBox;
