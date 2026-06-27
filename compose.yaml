@@ -92,12 +92,29 @@ services:
     restart: unless-stopped
 
   photon:
-    # Image/setup per docs/roadmap (Italy needs a locally-built Photon index).
-    image: ghcr.io/iter-maps/photon:dev
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: photon
+    image: ghcr.io/iter-maps/server-photon:dev
     profiles: [engines]
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
+    command: ["serve", "-data-dir", "/data/photon", "-listen-ip", "0.0.0.0"]
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx${PHOTON_HEAP:-1g}"
+    # read-WRITE: embedded OpenSearch writes lock/translog files even in serve
+    # mode, so a read-only mount fails to start (concept doc 06 §7).
     volumes:
-      - iter-data:/photon/photon_data
+      - iter-data:/data
     networks: [iter-net]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:2322/status"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
 volumes:

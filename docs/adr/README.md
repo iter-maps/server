@@ -54,3 +54,4 @@ a typo) do not need one.
 - [0007](0007-offline-extraction-via-go-pmtiles.md) — Offline extraction via the go-pmtiles CLI
 - [0008](0008-region-model-nested-profiles.md) — Region model: nested composable profiles
 - [0009](0009-otp-graph-built-in-pipeline.md) — OTP routing graph built in the pipeline
+- [0010](0010-self-hosted-photon-with-civici-in-index.md) — Self-hosted Photon geocoding with civici baked into the index

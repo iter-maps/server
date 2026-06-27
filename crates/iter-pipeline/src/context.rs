@@ -79,6 +79,24 @@ impl Context {
         format!("{}.osm.pbf", self.region.id)
     }
 
+    /// Photon's base directory: holds the import stream, the civici house docs,
+    /// and the built `photon_data` index the geocoder serves.
+    pub fn photon_dir(&self) -> PathBuf {
+        self.output("photon")
+    }
+
+    /// Civici extraction extent: the region's `civici.bbox`, overridable by
+    /// `CIVICI_BBOX`. `None` means the region declares no civici.
+    pub fn civici_bbox(&self) -> Option<String> {
+        config::opt("CIVICI_BBOX").or_else(|| self.region.civici.bbox.clone())
+    }
+
+    /// Whether civici extraction is on: `CIVICI_ENABLE` overrides the region's
+    /// `civici.enable` (default on when a bbox is declared).
+    pub fn civici_enabled(&self) -> bool {
+        config::flag("CIVICI_ENABLE", self.region.civici.enable.unwrap_or(true))
+    }
+
     /// Build a context against the committed region tree, for tests.
     #[cfg(test)]
     pub fn for_test(data_dir: PathBuf, version: &str) -> Self {

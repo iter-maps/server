@@ -69,9 +69,10 @@ externalized, regenerable artifacts — so the same code runs as a single
 | Containerization (multi-stage Dockerfiles, compose, `go-pmtiles`) + strict CI (124 tests) | ✅ done |
 | Data pipeline — OSM fetch + planetiler tiles (region-driven) | ✅ done, proven on real output |
 | Data pipeline — OSM clip + GTFS fetch + OTP graph build (region-driven) | ✅ done, proven on real output |
-| Data pipeline — Photon import, overlays, civici, NeTEx | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
+| Data pipeline — civici extraction + Photon geocoding index (region-driven) | ✅ done, proven on real data |
+| Data pipeline — overlays, NeTEx | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
 | Routing engine operational (OTP serving a real graph) | ✅ done, proven on real data |
-| Geocoding engine operational (Photon with real index) | 🔜 needs the import step |
+| Geocoding engine operational (Photon serving real index + civici) | ✅ done, proven on real data |
 | Planned forward-looking features (16, 19–28) | 🔜 roadmap |
 
 ## Quick start
