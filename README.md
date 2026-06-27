@@ -65,7 +65,7 @@ externalized, regenerable artifacts — so the same code runs as a single
 | Workspace · `iter-core` · `iter-contracts` · `iter-region` | ✅ done |
 | Gateway surface — tiles, styles, glyphs, sprite, overlays, health, freshness manifest, live-trains, offline extract/bundle, routing/geocoding proxy, liveness/readiness | ✅ done, tested |
 | Region model (nested profiles, `ITER_REGION`) | ✅ done |
-| `iter-pipeline` runner + `iter-worker` scheduler (frameworks + HEALTH / FL-GTFS) | ✅ frameworks |
+| `iter-pipeline` runner (full step set) + `iter-worker` scheduler (FL-GTFS + GTFS-RT ingestion) | ✅ done |
 | Containerization (multi-stage Dockerfiles, compose, `go-pmtiles`) + strict CI (167 tests) | ✅ done |
 | Data pipeline — OSM fetch + planetiler tiles (region-driven) | ✅ done, proven on real output |
 | Data pipeline — OSM clip + GTFS fetch + OTP graph build (region-driven) | ✅ done, proven on real output |

@@ -59,3 +59,4 @@ a typo) do not need one.
 - [0012](0012-address-correlation-build-it-yourself.md) — Address correlation: build the address→places index ourselves
 - [0013](0013-gateway-resolves-region.md) — The gateway resolves the region at startup
 - [0014](0014-pure-rust-overlay-geometry.md) — Pure-Rust overlay geometry (no Python/shapely)
+- [0015](0015-gtfs-rt-ingestion-vendored-prost.md) — GTFS-RT ingestion with a vendored prost subset

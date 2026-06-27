@@ -59,7 +59,13 @@ Commit history.
   gateway (ADR 0010); and the `transit-lines` overlay generated from the real
   Rome clip (9 line features — metro A/B/C + trams 2/3/5/8/14/19 — with way-union
   geometry and GTFS colours).
-- **Worker** — a graceful-shutdown job scheduler with the FL-GTFS build job.
+- **Worker** — a graceful-shutdown job scheduler running the FL-GTFS build job
+  and **GTFS-RT ingestion** (`rt-reliability`): polls ATAC's trip-updates feed,
+  decodes it with a vendored `prost` GTFS-RT subset (no `protoc`), and derives
+  validated stop-delay events keyed on the stable (route, direction, stop,
+  service-date) tuple — not the renumbered `trip_id` (ADR 0015). Proven on the
+  live feed (721 trip updates → 13,909 events). The persistent reliability rollup
+  tier lands next.
 - **Containerization** — multi-stage Dockerfiles, a podman/docker compose stack
   with a dev override, `go-pmtiles` in the gateway image, a **data-prep image**
   (`eclipse-temurin:21-jre` + planetiler 0.10.2 + osmium + OTP 2.7.0 shaded jar +

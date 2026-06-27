@@ -93,9 +93,14 @@ geocoding/overlay steps no-op for a region lacking that config. STYLES lands nex
 
 ### `iter-worker` (background tier)
 
-Long-running scheduled jobs: the FL NeTEx→GTFS build (on startup + every 24 h),
-and the planned RT polling / reliability rollups. Modelled as a job abstraction
-so it scales independently of the request path.
+Long-running scheduled jobs: the FL NeTEx→GTFS build (on startup + every 24 h)
+and **GTFS-RT ingestion** (`rt-reliability`, every 30 s) — polls ATAC's
+trip-updates feed, decodes it (a vendored `prost` GTFS-RT subset, no `protoc`),
+and derives validated stop-delay events on the stable (route, direction, stop,
+date) key (ADR 0015). The persistent reliability rollup tier lands next. Jobs are
+a `name`/`interval`/`run` abstraction — a job failure is logged and the schedule
+continues (unlike a pipeline step, which aborts), so a transient upstream blip
+never takes the worker down; it scales independently of the request path.
 
 ### Shared crates
 

@@ -40,6 +40,7 @@ toml = "0.8"
 osmpbf = "0.3"
 geo = "0.31"
 geojson = "0.24"
+prost = "0.13"
 
 iter-core = { path = "crates/iter-core" }
 iter-contracts = { path = "crates/iter-contracts" }
