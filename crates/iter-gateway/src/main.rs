@@ -2,6 +2,7 @@ mod config;
 mod health;
 mod router;
 mod state;
+mod tiles;
 
 use config::GatewayConfig;
 use state::AppState;

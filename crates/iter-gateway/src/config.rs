@@ -10,15 +10,22 @@ pub struct GatewayConfig {
     pub bind: SocketAddr,
     /// Root of the read-only artifact tree the pipeline produces.
     pub data_dir: PathBuf,
+    /// Directory holding the basemap PMTiles archive(s).
+    pub tiles_dir: PathBuf,
 }
 
 impl GatewayConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let host = config::or("GATEWAY_HOST", "0.0.0.0");
         let port: u16 = config::parse("GATEWAY_PORT", 8090);
+        let data_dir = PathBuf::from(config::or("DATA_DIR", "/data"));
+        let tiles_dir = config::opt("TILES_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| data_dir.join("output/tiles"));
         Ok(Self {
             bind: format!("{host}:{port}").parse()?,
-            data_dir: PathBuf::from(config::or("DATA_DIR", "/data")),
+            data_dir,
+            tiles_dir,
         })
     }
 }
