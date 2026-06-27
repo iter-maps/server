@@ -63,13 +63,12 @@ pipeline and worker frameworks are in place. What remains:
   names and the `Date.toString()` date-param are reconstructed from the design
   notes and must be confirmed against the real (cleartext, external) API; see the
   module-level VERIFICATION NEEDED note.
-- **Overlay geometry** — `transit-lines` ✅ done (pure Rust, ADR 0014: union the
-  ATAC metro/tram track ways from the OSM clip into one `MultiLineString` per
-  line, shared track deduped by way id, GTFS colours joined; proven on the real
-  Rome clip → 9 line features). **Remaining:** `metro-stations` 🚧 — the
-  platform/concourse/exit cutout geometry (track-graph centreline walk, side-
-  offset platforms, `geo` concave-hull concourse, morphological close), plus the
-  `STYLES` render step.
+- **Overlay geometry** ✅ done (pure Rust, ADR 0014) — `transit-lines` (way-union
+  `MultiLineString` per line, GTFS colours) and `metro-stations` (concave-hull
+  concourses + per-direction platform strips offset along the real track + named
+  exits), proven on the real Rome clip (9 lines; 443 station features).
+  **Remaining:** the reference impl's morphological smoothing + corridor union
+  (the current concourse is a concave hull) and the `STYLES` render step.
   Design: concept doc 09 — overlays-geometry · Decision: ADR 0014.
 - **Pipeline refresh triggers** — the runner framework, the `FORCE_*`/`SKIP_*`
   knobs, and the build steps are implemented; the daily (`--gtfs` + graph) /
