@@ -71,6 +71,14 @@ individually (`FORCE_<step>` / `SKIP_<step>`). It coordinates external tools
 the build image, never on the host — alongside Rust-native steps (glyph fetch,
 style render, build-config generation, overlay generation, health write).
 
+Implemented steps: **OSM** (fetch the regional PBF) → **CLIP** (osmium carves the
+routing extent) → **GTFS** (fetch the region's feeds) → **BUILD_CONFIG** (pin
+OTP's inputs with stable feedIds) → **GRAPH** (OTP `--build --save`) → **TILES**
+(planetiler render) → **HEALTH**. OTP's inputs and its `graph.obj` share one
+directory, `/data/graph`, which the OTP service then loads read-only (ADR 0009).
+The routing steps no-op for a basemap-only region. STYLES, OVERLAY, CIVICI, and
+the Photon import land next (roadmap).
+
 ### `iter-worker` (background tier)
 
 Long-running scheduled jobs: the FL NeTEx→GTFS build (on startup + every 24 h),

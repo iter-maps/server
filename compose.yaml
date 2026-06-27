@@ -69,15 +69,25 @@ services:
     restart: unless-stopped
 
   # ── External engines (opt-in: `--profile engines`) ──────────────────────────
-  # They require pipeline-built artifacts (routing graph, geocoding index) that
-  # land with the engine-orchestration steps (docs/roadmap). Topology is wired
-  # so the gateway reaches them by service name (OTP_URL / PHOTON_URL).
+  # The gateway reaches them by service name (OTP_URL / PHOTON_URL). OTP loads
+  # the graph the pipeline builds at `/data/graph`; Photon still needs a
+  # locally-built index (docs/roadmap).
   otp:
     image: docker.io/opentripplanner/opentripplanner:2.7.0
     profiles: [engines]
-    command: ["--load", "--serve", "/var/opentripplanner"]
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
+    # The stock image's entrypoint hardcodes /var/opentripplanner as the graph
+    # directory; we reuse its jib invocation but point OTP at the pipeline's
+    # /data/graph instead, then load + serve it.
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - 'exec java $JAVA_OPTS -cp @/app/jib-classpath-file @/app/jib-main-class-file /data/graph --load --serve'
+    environment:
+      JAVA_OPTS: "-Xmx${OTP_HEAP:-4g}"
     volumes:
-      - iter-data:/var/opentripplanner
+      - iter-data:/data:ro
     networks: [iter-net]
     restart: unless-stopped
 

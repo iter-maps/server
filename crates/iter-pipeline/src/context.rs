@@ -58,6 +58,27 @@ impl Context {
         format!("{}.pmtiles", self.region.id)
     }
 
+    /// Transit-routing clip extent: the region's `routing`, overridable by
+    /// `ROUTING_BOUNDS` (e.g. to shrink a Lazio clip to central Rome on a small
+    /// host). `None` means the region has no transit routing — the OTP steps
+    /// then no-op, so a basemap-only deploy (e.g. `italy`) builds tiles alone.
+    pub fn routing_bounds(&self) -> Option<String> {
+        config::opt("ROUTING_BOUNDS").or_else(|| self.region.extents.routing.clone())
+    }
+
+    /// OTP's base directory: the clipped OSM, the GTFS feeds, `build-config.json`
+    /// and the built `graph.obj` all live here, so `otp --load --serve` finds
+    /// them together.
+    pub fn graph_dir(&self) -> PathBuf {
+        self.output("graph")
+    }
+
+    /// The clipped street-network artifact name, region-derived
+    /// (`rome.osm.pbf`). OTP auto-detects the `.osm.pbf` suffix.
+    pub fn clipped_osm_filename(&self) -> String {
+        format!("{}.osm.pbf", self.region.id)
+    }
+
     /// Build a context against the committed region tree, for tests.
     #[cfg(test)]
     pub fn for_test(data_dir: PathBuf, version: &str) -> Self {

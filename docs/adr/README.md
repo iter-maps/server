@@ -53,3 +53,4 @@ a typo) do not need one.
 - [0006](0006-strict-ci-and-testing-bar.md) — Strict CI and the testing bar
 - [0007](0007-offline-extraction-via-go-pmtiles.md) — Offline extraction via the go-pmtiles CLI
 - [0008](0008-region-model-nested-profiles.md) — Region model: nested composable profiles
+- [0009](0009-otp-graph-built-in-pipeline.md) — OTP routing graph built in the pipeline

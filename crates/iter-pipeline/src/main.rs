@@ -20,6 +20,10 @@ async fn main() -> anyhow::Result<()> {
 
     let steps: Vec<Box<dyn Step>> = vec![
         Box::new(steps::osm::FetchOsm),
+        Box::new(steps::osm_clip::ClipOsm),
+        Box::new(steps::gtfs::FetchGtfs),
+        Box::new(steps::build_config::WriteBuildConfig),
+        Box::new(steps::graph::BuildGraph),
         Box::new(steps::tiles::BuildTiles),
         Box::new(steps::health::WriteHealth),
     ];

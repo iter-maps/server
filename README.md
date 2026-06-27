@@ -68,8 +68,10 @@ externalized, regenerable artifacts — so the same code runs as a single
 | `iter-pipeline` runner + `iter-worker` scheduler (frameworks + HEALTH / FL-GTFS) | ✅ frameworks |
 | Containerization (multi-stage Dockerfiles, compose, `go-pmtiles`) + strict CI (124 tests) | ✅ done |
 | Data pipeline — OSM fetch + planetiler tiles (region-driven) | ✅ done, proven on real output |
-| Data pipeline — OSM clip, OTP graph, Photon import, overlays, NeTEx | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
-| External engines operational (OTP/Photon with real data) | 🔜 needs the pipeline |
+| Data pipeline — OSM clip + GTFS fetch + OTP graph build (region-driven) | ✅ done, proven on real output |
+| Data pipeline — Photon import, overlays, civici, NeTEx | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
+| Routing engine operational (OTP serving a real graph) | ✅ done, proven on real data |
+| Geocoding engine operational (Photon with real index) | 🔜 needs the import step |
 | Planned forward-looking features (16, 19–28) | 🔜 roadmap |
 
 ## Quick start
@@ -111,9 +113,9 @@ docs/               architecture, API contract, roadmap   (CC-BY-4.0)
 
 Everything is configured through environment variables (`.env` for "clone +
 up"); see [`.env.example`](.env.example). Key knobs: service ports
-(`GATEWAY_PORT`, …), upstream URLs (`OTP_URL`, `PHOTON_URL`), the two extents
-(`BBOX_LAZIO`, `PMTILES_BOUNDS`), and the pipeline's `FORCE_*`/`SKIP_*` step
-overrides.
+(`GATEWAY_PORT`, …), upstream URLs (`OTP_URL`, `PHOTON_URL`), the per-host
+extent overrides (`ROUTING_BOUNDS`, `PMTILES_BOUNDS`), and the pipeline's
+`FORCE_*`/`SKIP_*` step overrides.
 
 ## Licensing
 

@@ -37,16 +37,20 @@ ENTRYPOINT ["iter-gateway"]
 FROM eclipse-temurin:21-jre-jammy AS dataprep
 ARG PLANETILER_VERSION=0.10.2
 ARG PMTILES_VERSION=1.30.3
+ARG OTP_VERSION=2.7.0
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl osmium-tool zstd unzip \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL -o /opt/planetiler.jar \
       "https://github.com/onthegomap/planetiler/releases/download/v${PLANETILER_VERSION}/planetiler.jar" \
+ && curl -fsSL -o /opt/otp.jar \
+      "https://repo1.maven.org/maven2/org/opentripplanner/otp-shaded/${OTP_VERSION}/otp-shaded-${OTP_VERSION}.jar" \
  && curl -fsSL -o /tmp/pmtiles.tgz \
       "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz" \
  && tar -xzf /tmp/pmtiles.tgz -C /usr/local/bin pmtiles \
  && rm /tmp/pmtiles.tgz
-ENV DATA_DIR=/data REGIONS_DIR=/regions PLANETILER_JAR=/opt/planetiler.jar
+ENV DATA_DIR=/data REGIONS_DIR=/regions \
+    PLANETILER_JAR=/opt/planetiler.jar OTP_JAR=/opt/otp.jar
 COPY regions /regions
 
 FROM dataprep AS pipeline
