@@ -49,7 +49,8 @@ than reinventing them:
 | Photon | Geocoding (`/api`, `/reverse`, `/status`) | Komoot Photon (JVM) |
 
 Shared crates: `iter-core` (config, error envelope, tracing, shutdown, health),
-`iter-contracts` (wire DTOs), `iter-pmtiles` (PMTiles reader + range extract).
+`iter-contracts` (wire DTOs), `iter-region` (the region model — see
+[`docs/adr/0008`](docs/adr/0008-region-model-nested-profiles.md)).
 
 The split follows the build/serve asymmetry: the stateless edge is cheap to
 **scale wide** (replicas), the data-heavy engines stay **narrow**, and the heavy
@@ -61,12 +62,14 @@ externalized, regenerable artifacts — so the same code runs as a single
 
 | Area | State |
 |---|---|
-| Workspace, `iter-core`, `iter-contracts` | ✅ done |
-| `iter-gateway` edge (boot, config, logging, graceful shutdown, liveness/readiness) | ✅ done |
-| Tiles / styles / overlays / offline / live-trains / proxy | 🚧 in progress |
-| `iter-pipeline`, `iter-worker` | 🚧 in progress |
-| Containerization (Dockerfiles, compose) | 🚧 in progress |
-| External engine integration (OTP, Photon), data pipeline | 🔜 see [`docs/roadmap/`](docs/roadmap/) |
+| Workspace · `iter-core` · `iter-contracts` · `iter-region` | ✅ done |
+| Gateway surface — tiles, styles, glyphs, sprite, overlays, health, freshness manifest, live-trains, offline extract/bundle, routing/geocoding proxy, liveness/readiness | ✅ done, tested |
+| Region model (nested profiles, `ITER_REGION`) | ✅ done |
+| `iter-pipeline` runner + `iter-worker` scheduler (frameworks + HEALTH / FL-GTFS) | ✅ frameworks |
+| Containerization (multi-stage Dockerfiles, compose, `go-pmtiles`) + strict CI (124 tests) | ✅ done |
+| Data-pipeline engine steps (OSM/planetiler/OTP/Photon/overlays/NeTEx) | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
+| External engines operational (OTP/Photon with real data) | 🔜 needs the pipeline |
+| Planned forward-looking features (16, 19–28) | 🔜 roadmap |
 
 ## Quick start
 

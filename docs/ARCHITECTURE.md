@@ -24,7 +24,7 @@ client ─┼──▶│ iter-gateway │────────────�
         │   │    :8090     │                    └──────────────┘     │
         │   │  serves directly:                                      │
         │   │   tiles · styles · glyphs · sprite · overlays          │
-        │   │   offline · live-trains · health                       │
+        │   │   offline · live-trains · health · manifest            │
         │   └─────────────┘                                          │
         │          ▲ reads                                           │
         │   ┌──────┴───────────────┐         ┌──────────────┐        │
@@ -51,12 +51,14 @@ scale horizontally with no coordination. Surfaces:
 - **Overlays** — `GET /overlays/{metro-stations,transit-lines}.geojson`,
   fail-soft (missing file → client draws nothing, no error).
 - **Offline** — `GET /offline/{extract,bundle}`; range-reads the clustered
-  PMTiles and zips a bundle. Abuse guards (6 deg² area cap, z14 clamp, 3
-  concurrent) are the only protection on this public, auth-less surface.
+  PMTiles (via the pinned `go-pmtiles` CLI) and zips a bundle. Abuse guards
+  (6 deg² area cap, z14 clamp, 3 concurrent) are the only protection on this
+  public, auth-less surface.
 - **Live-trains** — `GET /trenitalia/*`; a normalized, TTL-cached,
   single-flighted proxy over ViaggiaTreno.
-- **Health** — client-facing freshness `health.json` plus the orchestration
-  probes (`/livez`, `/readyz`).
+- **Health** — client-facing freshness `health.json`, the `GET /manifest`
+  per-artifact freshness document, plus the orchestration probes (`/livez`,
+  `/readyz`).
 - **Routing / geocoding** — reverse-proxied to OTP / Photon; the BFF is where
   future itinerary re-ranking and place-enrichment will sit.
 
@@ -83,8 +85,24 @@ so it scales independently of the request path.
 - **`iter-contracts`** — the wire DTOs (camelCase field names the client greps
   for): `geo::BBox`, health documents, live-trains board/station, offline
   manifest + caps + error codes.
-- **`iter-pmtiles`** — PMTiles v3 reader and clustered range-extract, shared by
-  tile serving and offline.
+- **`iter-region`** — the region model: profile schema + the root→leaf resolver
+  (see [Region model](#region-model)).
+
+(Tile range-extract is done by the pinned `go-pmtiles` CLI rather than a Rust
+PMTiles reader; see ADR 0007.)
+
+## Region model
+
+Region is a first-class, region-generic abstraction — not hardcoded constants
+(ADR 0008). A region is a node in a tree of declarative profiles
+(`regions/<path>/region.toml`); a deployment targets a node
+(`ITER_REGION=italy/lazio/rome`) and `iter-region` resolves the chain root→leaf
+into one effective config: the decoupled extents, geocoding, live-trains
+provider, feeds, and overlays. Data is placed by **service area, not operator** —
+the all-Italy basemap + geocoding + ViaggiaTreno boards at the `italy` root,
+COTRAL/COTRAL-FERRO/FL at `lazio`, ATAC + overlays at `rome`. The pipeline,
+gateway, and worker consume the resolved config and stay region-generic, so
+adding a region (Milan, Paris, all of Europe) is config + data, no recompile.
 
 ## Scaling model
 
@@ -117,9 +135,12 @@ graceful drain + readiness gating are designed in, not bolted on.
 ## Configuration
 
 Entirely environment-driven (`.env` for "clone + up"); no host-side state. The
-pipeline's per-step `FORCE_*`/`SKIP_*` knobs make refresh granular, and the two
-extents (`BBOX_LAZIO` for the transit clip, `PMTILES_BOUNDS` for the basemap)
-are independent so the map can go nationwide while routing stays scoped.
+active region (`ITER_REGION`) selects a node in the region tree, whose resolved
+profile supplies the decoupled extents (basemap vs routing vs overlay), feeds,
+geocoding, and overlays — so the map can go nationwide while routing stays
+scoped. The pipeline's per-step `FORCE_*`/`SKIP_*` knobs make refresh granular,
+and env knobs (e.g. `PMTILES_BOUNDS`) can override a profile value for a small
+host.
 
 ## Invariants honored
 
