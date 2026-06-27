@@ -1,0 +1,22 @@
+mod context;
+mod fsx;
+mod runner;
+mod step;
+mod steps;
+
+use context::Context;
+use step::Step;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    iter_core::telemetry::init("iter-pipeline");
+
+    let ctx = Context::from_env();
+    tracing::info!(data_dir = %ctx.data_dir.display(), "data-prep pipeline starting");
+
+    let steps: Vec<Box<dyn Step>> = vec![Box::new(steps::health::WriteHealth)];
+
+    runner::run_all(&ctx, &steps).await?;
+    tracing::info!("pipeline complete");
+    Ok(())
+}

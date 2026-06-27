@@ -1,0 +1,23 @@
+[package]
+name = "iter-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Idempotent data-prep orchestrator: fetch -> clip -> build -> render -> import -> health."
+
+[[bin]]
+name = "iter-pipeline"
+path = "src/main.rs"
+
+[dependencies]
+iter-core = { workspace = true }
+iter-contracts = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+jiff = { workspace = true }
+async-trait = { workspace = true }

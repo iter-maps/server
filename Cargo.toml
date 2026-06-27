@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/iter-core", "crates/iter-contracts", "crates/iter-gateway"]
+members = ["crates/iter-core", "crates/iter-contracts", "crates/iter-gateway", "crates/iter-pipeline"]
 
 [workspace.package]
 version = "0.0.0"
@@ -24,6 +24,8 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "set-header", "fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 bytes = "1"
+jiff = "0.2"
+async-trait = "0.1"
 
 iter-core = { path = "crates/iter-core" }
 iter-contracts = { path = "crates/iter-contracts" }
