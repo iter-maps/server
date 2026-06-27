@@ -25,17 +25,19 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
         upstream_timeout: Duration::from_secs(2),
         version: "0.0.0-test".to_string(),
         tiles_dir: data_dir.join("output/tiles"),
+        tiles_basename: "rome.pmtiles".to_string(),
         styles_dir: data_dir.join("output/styles"),
         glyphs_dir: data_dir.join("static/glyphs"),
         sprite_dir: data_dir.join("static/sprite"),
         overlays_dir: data_dir.join("output/overlays"),
+        overlay_kinds: vec!["metro-stations".to_string(), "transit-lines".to_string()],
         health_path: data_dir.join("output/health.json"),
         offline: OfflineCaps {
             max_area_deg2: 6.0,
             max_zoom: 14,
             max_concurrent: 3,
         },
-        offline_source: data_dir.join("output/tiles/roma.pmtiles"),
+        offline_source: data_dir.join("output/tiles/rome.pmtiles"),
         places_path: data_dir.join("output/places.jsonl"),
         pmtiles_bin: "iter-pmtiles-absent".to_string(),
         data_dir,
@@ -51,7 +53,7 @@ fn write(path: &Path, body: &[u8]) {
 fn populated_state() -> (TempDir, AppState) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(&root.join("output/tiles/roma.pmtiles"), &[0u8; 4096]);
+    write(&root.join("output/tiles/rome.pmtiles"), &[0u8; 4096]);
     write(
         &root.join("output/styles/light.json"),
         br#"{"glyphs":"__BASE_URL__/glyphs/{fontstack}/{range}.pbf","sprite":"__BASE_URL__/sprite/sprite"}"#,
@@ -134,12 +136,12 @@ async fn readyz_down_when_data_dir_absent() {
 async fn tiles_full_and_range_and_missing() {
     let (_d, app) = populated();
 
-    let (status, _, body) = send(&app, get("/tiles/roma.pmtiles")).await;
+    let (status, _, body) = send(&app, get("/tiles/rome.pmtiles")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.len(), 4096);
 
     let range = Request::builder()
-        .uri("/tiles/roma.pmtiles")
+        .uri("/tiles/rome.pmtiles")
         .header(header::RANGE, "bytes=0-99")
         .body(Body::empty())
         .unwrap();

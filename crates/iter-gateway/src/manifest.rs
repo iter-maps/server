@@ -21,7 +21,7 @@ pub async fn manifest(State(state): State<AppState>) -> impl IntoResponse {
     let mut artifacts = std::collections::BTreeMap::new();
     artifacts.insert(
         "tiles".to_string(),
-        freshness(&cfg.tiles_dir.join("roma.pmtiles")).await,
+        freshness(&cfg.tiles_dir.join(&cfg.tiles_basename)).await,
     );
     artifacts.insert("styles".to_string(), freshness(&cfg.styles_dir).await);
     artifacts.insert("glyphs".to_string(), freshness(&cfg.glyphs_dir).await);

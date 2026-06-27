@@ -170,6 +170,9 @@ struct BundleDirs {
     glyphs: PathBuf,
     sprite: PathBuf,
     overlays: PathBuf,
+    /// The served basemap filename (`rome.pmtiles`), so the style rewrite points
+    /// the right source at the bundled `area.pmtiles`.
+    tiles_basename: String,
 }
 
 /// `GET /offline/bundle`: an extract plus the styles (rewritten to point at the
@@ -207,6 +210,7 @@ pub async fn bundle(
         glyphs: state.cfg.glyphs_dir.clone(),
         sprite: state.cfg.sprite_dir.clone(),
         overlays: state.cfg.overlays_dir.clone(),
+        tiles_basename: state.cfg.tiles_basename.clone(),
     };
     let generator = format!("iter-gateway/{}", state.cfg.version);
 
@@ -272,7 +276,7 @@ fn build_bundle(
         let path = dirs.styles.join(format!("{name}.json"));
         if let Ok(text) = std::fs::read_to_string(&path) {
             zip.start_file(format!("styles/{name}.json"), file_opts)?;
-            zip.write_all(rewrite_style_tiles(&text).as_bytes())?;
+            zip.write_all(rewrite_style_tiles(&text, &dirs.tiles_basename).as_bytes())?;
             included_styles.push(name.clone());
         }
     }
@@ -322,8 +326,8 @@ fn build_bundle(
 
 /// Point the style's tile source at the bundled archive; keep `__BASE_URL__`
 /// literal for the client's `file://` substitution.
-fn rewrite_style_tiles(style: &str) -> String {
-    style.replace("/tiles/roma.pmtiles", "/area.pmtiles")
+fn rewrite_style_tiles(style: &str, tiles_basename: &str) -> String {
+    style.replace(&format!("/tiles/{tiles_basename}"), "/area.pmtiles")
 }
 
 fn add_dir<W: std::io::Write + std::io::Seek>(
@@ -443,7 +447,7 @@ mod tests {
         std::fs::create_dir_all(root.join("styles")).unwrap();
         std::fs::write(
             root.join("styles/light.json"),
-            r#"{"sources":{"b":{"url":"pmtiles://__BASE_URL__/tiles/roma.pmtiles"}}}"#,
+            r#"{"sources":{"b":{"url":"pmtiles://__BASE_URL__/tiles/rome.pmtiles"}}}"#,
         )
         .unwrap();
         std::fs::create_dir_all(root.join("overlays")).unwrap();
@@ -454,6 +458,7 @@ mod tests {
             glyphs: root.join("glyphs"), // absent → skipped, not an error
             sprite: root.join("sprite"), // absent → skipped
             overlays: root.join("overlays"),
+            tiles_basename: "rome.pmtiles".to_string(),
         };
         let params = ExtractParams {
             bbox: BBox::parse("12,41,13,42").unwrap(),
@@ -485,7 +490,7 @@ mod tests {
             .read_to_string(&mut style)
             .unwrap();
         assert!(style.contains("/area.pmtiles"));
-        assert!(!style.contains("/tiles/roma.pmtiles"));
+        assert!(!style.contains("/tiles/rome.pmtiles"));
         assert!(
             style.contains("__BASE_URL__"),
             "the placeholder is kept for the client"

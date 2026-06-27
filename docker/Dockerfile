@@ -28,6 +28,10 @@ RUN curl -fsSL -o /tmp/pmtiles.tgz \
  && rm /tmp/pmtiles.tgz \
  && pmtiles version
 COPY --from=builder /build/target/release/iter-gateway /usr/local/bin/iter-gateway
+# The gateway resolves the region at startup (ADR 0013) to derive the basemap
+# name / overlay kinds / live-train code, so it needs the region tree.
+COPY regions /regions
+ENV REGIONS_DIR=/regions
 EXPOSE 8090
 ENTRYPOINT ["iter-gateway"]
 

@@ -11,16 +11,17 @@ use iter_core::ApiError;
 use crate::http::ApiResult;
 use crate::state::AppState;
 
-const ALLOWED: [&str; 2] = ["metro-stations", "transit-lines"];
 const EMPTY_FC: &str = r#"{"type":"FeatureCollection","features":[]}"#;
 
 pub async fn overlay(
     Path(file): Path<String>,
     State(state): State<AppState>,
 ) -> ApiResult<Response> {
+    // The served kinds come from the resolved region (region.overlays), so a
+    // region with different overlays needs no code change (ADR 0008 / 0013).
     let stem = file
         .strip_suffix(".geojson")
-        .filter(|s| ALLOWED.contains(s))
+        .filter(|s| state.cfg.overlay_kinds.iter().any(|k| k == s))
         .ok_or_else(|| ApiError::not_found(format!("unknown overlay '{file}'")))?;
 
     let path = state.cfg.overlays_dir.join(format!("{stem}.geojson"));

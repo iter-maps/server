@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use iter_contracts::offline;
 use iter_core::config;
 
@@ -26,10 +27,15 @@ pub struct GatewayConfig {
     /// Pipeline-written client health document.
     pub health_path: PathBuf,
     pub tiles_dir: PathBuf,
+    /// The basemap archive's filename, derived from the resolved region id
+    /// (`rome.pmtiles`) — kept in sync with what the pipeline writes (ADR 0008).
+    pub tiles_basename: String,
     pub styles_dir: PathBuf,
     pub glyphs_dir: PathBuf,
     pub sprite_dir: PathBuf,
     pub overlays_dir: PathBuf,
+    /// Overlay kinds the resolved region declares (drives the served allowlist).
+    pub overlay_kinds: Vec<String>,
     pub offline: OfflineCaps,
     /// Build-time addressed-POI index for place correlation (`/places/related`).
     pub places_path: PathBuf,
@@ -54,6 +60,17 @@ impl GatewayConfig {
         let port: u16 = config::parse("GATEWAY_PORT", 8090);
         let data_dir = PathBuf::from(config::or("DATA_DIR", "/data"));
         let tiles_dir = dir("TILES_DIR", &data_dir, "output/tiles");
+
+        // Resolve the region the same way the pipeline does, so the gateway and
+        // the build tier read one source of truth — the basemap name, overlay
+        // kinds, and live-train region can never drift (ADR 0008 / 0013).
+        let regions_dir = PathBuf::from(config::or("REGIONS_DIR", "regions"));
+        let target = config::or("ITER_REGION", "italy/lazio/rome");
+        let region = iter_region::resolve(&regions_dir, &target)
+            .with_context(|| format!("resolving region '{target}'"))?;
+        let tiles_basename = format!("{}.pmtiles", region.id);
+        let overlay_kinds: Vec<String> = region.overlays.iter().map(|o| o.kind.clone()).collect();
+
         Ok(Self {
             bind: format!("{host}:{port}").parse()?,
             otp_url: config::or("OTP_URL", "http://otp:8080"),
@@ -62,7 +79,11 @@ impl GatewayConfig {
                 "VIAGGIATRENO_URL",
                 "http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno",
             ),
-            trenitalia_region: config::parse("TRENITALIA_REGION", 5),
+            // Seed from the region's live-train code; env still overrides.
+            trenitalia_region: config::parse(
+                "TRENITALIA_REGION",
+                region.live_trains.region_code.unwrap_or(5),
+            ),
             upstream_timeout: std::time::Duration::from_secs(config::parse(
                 "UPSTREAM_TIMEOUT_SECS",
                 30,
@@ -87,8 +108,10 @@ impl GatewayConfig {
             places_path: dir("PLACES_PATH", &data_dir, "output/places.jsonl"),
             offline_source: config::opt("OFFLINE_PMTILES_PATH")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| tiles_dir.join("roma.pmtiles")),
+                .unwrap_or_else(|| tiles_dir.join(&tiles_basename)),
             pmtiles_bin: config::or("OFFLINE_PMTILES_BIN", "pmtiles"),
+            overlay_kinds,
+            tiles_basename,
             tiles_dir,
             data_dir,
         })

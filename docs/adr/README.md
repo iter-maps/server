@@ -57,3 +57,4 @@ a typo) do not need one.
 - [0010](0010-self-hosted-photon-with-civici-in-index.md) — Self-hosted Photon geocoding with civici baked into the index
 - [0011](0011-place-enrichment-open-first-in-bff.md) — Place enrichment: open-first fusion in the BFF
 - [0012](0012-address-correlation-build-it-yourself.md) — Address correlation: build the address→places index ourselves
+- [0013](0013-gateway-resolves-region.md) — The gateway resolves the region at startup
