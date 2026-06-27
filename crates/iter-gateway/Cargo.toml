@@ -30,7 +30,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 jiff = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
-tempfile = { workspace = true }

@@ -17,6 +17,8 @@ pub struct AppState {
     pub boards: Arc<TtlCache<Vec<BoardEntry>>>,
     /// TTL + single-flight cache for station lookups.
     pub stations: Arc<TtlCache<Vec<Station>>>,
+    /// Concurrency gate for the heavy offline extracts (no queue → 503 BUSY).
+    pub offline_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -25,11 +27,13 @@ impl AppState {
             .timeout(cfg.upstream_timeout)
             .user_agent(concat!("iter-gateway/", env!("CARGO_PKG_VERSION")))
             .build()?;
+        let offline_gate = Arc::new(tokio::sync::Semaphore::new(cfg.offline.max_concurrent));
         Ok(Self {
             cfg: Arc::new(cfg),
             http,
             boards: Arc::new(TtlCache::new()),
             stations: Arc::new(TtlCache::new()),
+            offline_gate,
         })
     }
 }

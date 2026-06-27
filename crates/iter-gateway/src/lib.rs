@@ -8,6 +8,7 @@ pub mod glyphs;
 pub mod health;
 pub mod http;
 pub mod manifest;
+pub mod offline;
 pub mod overlays;
 pub mod proxy;
 pub mod router;

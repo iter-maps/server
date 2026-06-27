@@ -4,7 +4,9 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
-use crate::{glyphs, health, manifest, overlays, proxy, sprite, styles, tiles, trenitalia};
+use crate::{
+    glyphs, health, manifest, offline, overlays, proxy, sprite, styles, tiles, trenitalia,
+};
 
 /// Assemble the gateway router. Capability modules (tiles, styles, overlays,
 /// offline, live-trains, routing/geocoding proxy, client health) attach their
@@ -32,6 +34,7 @@ pub fn build(state: AppState) -> Router {
         .route("/trenitalia/stations", get(trenitalia::stations_list))
         .route("/trenitalia/departures", get(trenitalia::departures))
         .route("/trenitalia/arrivals", get(trenitalia::arrivals))
+        .route("/offline/extract", get(offline::extract))
         .merge(tiles::router(&state))
         .merge(sprite::router(&state))
         .layer(TraceLayer::new_for_http())

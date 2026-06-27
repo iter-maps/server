@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use iter_gateway::config::GatewayConfig;
+use iter_gateway::config::{GatewayConfig, OfflineCaps};
 use iter_gateway::router;
 use iter_gateway::state::AppState;
 use tempfile::TempDir;
@@ -30,6 +30,13 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
         sprite_dir: data_dir.join("static/sprite"),
         overlays_dir: data_dir.join("output/overlays"),
         health_path: data_dir.join("output/health.json"),
+        offline: OfflineCaps {
+            max_area_deg2: 6.0,
+            max_zoom: 14,
+            max_concurrent: 3,
+        },
+        offline_source: data_dir.join("output/tiles/roma.pmtiles"),
+        pmtiles_bin: "iter-pmtiles-absent".to_string(),
         data_dir,
     }
 }
@@ -40,7 +47,7 @@ fn write(path: &Path, body: &[u8]) {
 }
 
 /// A temp data tree populated with one fixture per artifact kind.
-fn populated() -> (TempDir, Router) {
+fn populated_state() -> (TempDir, AppState) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     write(&root.join("output/tiles/roma.pmtiles"), &[0u8; 4096]);
@@ -57,8 +64,13 @@ fn populated() -> (TempDir, Router) {
         &root.join("output/overlays/metro-stations.geojson"),
         br#"{"type":"FeatureCollection","features":[{"type":"Feature"}]}"#,
     );
-    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
-    (dir, app)
+    let state = AppState::new(config_for(root.to_path_buf())).unwrap();
+    (dir, state)
+}
+
+fn populated() -> (TempDir, Router) {
+    let (dir, state) = populated_state();
+    (dir, router::build(state))
 }
 
 async fn send(app: &Router, req: Request<Body>) -> (StatusCode, Option<String>, Vec<u8>) {
@@ -276,6 +288,47 @@ async fn trenitalia_departures_valid_reaches_dead_upstream() {
     let (_d, app) = populated();
     let (status, _, _) = send(&app, get("/trenitalia/departures?station=S08409")).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn offline_missing_bbox_is_400() {
+    let (_d, app) = populated();
+    let (status, _, body) = send(&app, get("/offline/extract")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"]["code"], "BBOX_REQUIRED");
+}
+
+#[tokio::test]
+async fn offline_invalid_bbox_is_400() {
+    let (_d, app) = populated();
+    let (status, _, body) = send(&app, get("/offline/extract?bbox=1,2,3")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"]["code"], "BBOX_INVALID");
+}
+
+#[tokio::test]
+async fn offline_area_too_large_is_413() {
+    let (_d, app) = populated();
+    let (status, _, body) = send(&app, get("/offline/extract?bbox=0,0,10,10")).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"]["code"], "AREA_TOO_LARGE");
+}
+
+#[tokio::test]
+async fn offline_concurrency_gate_returns_503_when_full() {
+    let (_d, state) = populated_state();
+    let gate = state.offline_gate.clone();
+    let app = router::build(state);
+
+    // Hold all permits → the next extract finds the gate full.
+    let _permits = gate.acquire_many(3).await.unwrap();
+    let (status, _, body) = send(&app, get("/offline/extract?bbox=12.4,41.8,12.6,42.0")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"]["code"], "BUSY");
 }
 
 #[tokio::test]
