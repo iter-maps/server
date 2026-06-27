@@ -136,4 +136,5 @@ The implementation follows a structure-agnostic design that pins the **external
 wire contracts**, **data provenance**, **algorithms**, and **invariants** while
 leaving the stack free to change. The published design and API contract live
 under [`docs/`](docs/) (CC-BY-4.0); see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-for how this rebuild is put together.
+for how this rebuild is put together, and [`docs/adr/`](docs/adr/README.md) for
+the decisions behind it.

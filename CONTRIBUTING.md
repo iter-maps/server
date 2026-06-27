@@ -48,6 +48,20 @@ The changelog is generated from these messages, so write them accurately.
 
 Never commit secrets, tokens, credentials, or non-public data.
 
+## Architecture decisions
+
+Any architecturally-significant change (a new crate/service, a wire-contract or
+config change, a notable dependency, the build/deploy model, the security or
+licensing posture) must include an **ADR** in [`docs/adr/`](docs/adr/README.md),
+in the same PR. See that README for what counts and the template. A reviewer may
+ask for one if a significant change arrives without it.
+
+## CI is strict
+
+Pushes and PRs are gated on fmt, `clippy -D warnings`, build, test, docs,
+`cargo deny`, typos, REUSE lint, and hadolint. Run fmt/clippy/test locally first.
+New behavior ships with tests in the same change.
+
 ## Sign-off: DCO, not a CLA
 
 Contributions are accepted under the **Developer Certificate of Origin (DCO)** —
