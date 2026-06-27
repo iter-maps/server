@@ -59,8 +59,14 @@ scale horizontally with no coordination. Surfaces:
 - **Health** — client-facing freshness `health.json`, the `GET /manifest`
   per-artifact freshness document, plus the orchestration probes (`/livez`,
   `/readyz`).
-- **Routing / geocoding** — reverse-proxied to OTP / Photon; the BFF is where
-  future itinerary re-ranking and place-enrichment will sit.
+- **Routing / geocoding** — reverse-proxied to OTP / Photon; the BFF already
+  hosts place enrichment/correlation (below) and is where future itinerary
+  re-ranking will sit.
+- **Places** — `GET /places/enrich` fuses open sources (Wikipedia summary,
+  Wikidata, Wikimedia Commons) into the normalized `Place` DTO with per-field
+  provenance; `GET /places/image` proxies a Commons image through the BFF; `GET
+  /places/related` correlates the places sharing a searched civico via an
+  in-memory address-bucket index (ADRs 0011, 0012).
 
 ### `iter-pipeline` (build tier) — one-shot / scheduled
 

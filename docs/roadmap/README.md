@@ -8,41 +8,43 @@ The architecture this plugs into is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md
 a stateless **gateway** (edge/BFF) fronting OTP + Photon, an idempotent
 **pipeline** (build tier), and an **iter-worker** (background jobs). "Design" /
 "Decision" pointers below name the design blueprint's documents and ADRs by
-number (e.g. "concept doc 16", "ADR 0014") — the structure-agnostic source of
+number (e.g. "concept doc 16", "ADR 0009") — the structure-agnostic source of
 truth maintained alongside the project.
 
 ## 1. External-engine integration (orchestrate-external)
 
 Mature external engines and tools we **orchestrate**, not reimplement. These run
-inside the pipeline/worker build images, never on the host. Tractable but
-unbuilt; tracked here so the orchestration boundary stays explicit.
+inside the pipeline/worker build images, never on the host. The static builds
+are now **done and proven**; the remaining sub-parts (realtime, refresh, FL) are
+flagged per item.
 
-- **OTP graph build + GTFS-RT + daily fresh graph** — clip OSM
-  (`osmium extract --bbox=$BBOX_LAZIO`), build the OTP2 graph from the 5 GTFS
-  feeds, serve `POST /otp/gtfs/v1`; attach the 3 ATAC GTFS-RT updaters
-  (trip-updates/vehicle-positions @30 s, alerts @60 s) with `fuzzyTripMatching`;
-  rebuild the static graph **daily** (mandatory for calendar sparsity + trip-id
-  churn) with a keep-old-in-RAM, single-recreate ~30–60 s swap.
+- **OTP graph build** ✅ done (ADR 0009) **· GTFS-RT + daily fresh graph** 🚧 —
+  the static graph is built and served: CLIP (osmium) → GTFS fetch →
+  BUILD_CONFIG → GRAPH (OTP `--build --save`) → OTP serves `POST /otp/gtfs/v1`
+  (proven with a real Rome `plan`). **Remaining:** the 3 ATAC GTFS-RT updaters
+  (trip-updates/vehicle-positions @30 s, alerts @60 s) with `fuzzyTripMatching`,
+  and the **daily** static-graph rebuild (mandatory for calendar sparsity +
+  trip-id churn) with a keep-old-in-RAM ~30–60 s swap.
   Design: concept doc 05 — routing-engine, doc 10 — realtime-transit ·
-  Decision: ADR 0013.
-- **Photon import + civici** — build the Photon index from the raw Italy dump
-  (`photon.jar` import), enriched with Italian house numbers (civici) extracted
-  via DuckDB from Overture/ANNCSU parquet (bbox filter, title-case, dedup by
-  street/number/city); serve `/api`, `/reverse`, `/status`.
+  Decision: ADR 0009.
+- **Photon import + civici** ✅ done (ADR 0010) — the Photon index is built from
+  the raw Italy dump (`photon.jar import`, embedded OpenSearch) enriched with
+  Italian civici extracted via DuckDB from Overture addresses (bbox filter, dedup
+  by street/number/city); serves `/api`, `/reverse`, `/status` (proven serving a
+  real Rome civico). **Remaining:** all-Italy full-index scaling (prod host).
   Design: concept doc 06 — geocoding-engine ·
-  Decision: ADR 0002.
-- **planetiler PMTiles render** — render the all-Italy z0–14 OMT PMTiles v3
-  archive from the Geofabrik PBF (+ auto-fetched water-polygons, natural-earth,
-  lake-centerline ancillaries), Hilbert-clustered, atomic-replaced; plus the
-  Pillow road-shield sprite at 1×/2×.
-  Design: concept doc 07 — basemap-and-tiles, doc 08 — map-styling ·
-  Decision: ADR 0008.
-- **osmium clips** — `osmium extract --bbox` for the Lazio routing PBF and
-  `osmium tags-filter` → OPL export of rail relations consumed by overlay/FL
-  builders.
+  Decision: ADR 0010.
+- **planetiler PMTiles render** ✅ done — renders the OMT PMTiles v3 archive
+  (z0–14, Hilbert-clustered, atomic-replaced) from the Geofabrik PBF + ancillaries
+  (proven on real Monaco/Rome output). **Remaining:** all-Italy render (prod host)
+  and the road-shield sprite.
+  Design: concept doc 07 — basemap-and-tiles, doc 08 — map-styling.
+- **osmium clips** ✅ done (the routing CLIP) — `osmium extract --bbox` for the
+  region routing PBF; the rail-relation export for overlay/FL builders lands with
+  the OVERLAY/FL work below.
   Design: concept doc 04 — data-pipeline.
-- **FL NeTEx→GTFS** — gateway/worker job synthesizing a Trenitalia-FL GTFS feed
-  from CCISS-NAP NeTEx (SAX parse, calendar re-anchor, shape stitching,
+- **FL NeTEx→GTFS** 🚧 — worker job synthesizing a Trenitalia-FL GTFS feed from
+  CCISS-NAP NeTEx (pull-parse, calendar re-anchor, shape stitching,
   category/geographic filters); fed into the OTP graph. NAP auto-download is
   unsolved (manual placement fallback).
   Design: concept doc 11 — gateway-and-external-providers ·
@@ -78,7 +80,7 @@ concept doc and ADR.
 |---|---|---|
 | Personalized planning | gateway rerank | [`personalized-planning.md`](personalized-planning.md) |
 | Synchronization / E2EE | gateway (scoped state) | [`synchronization.md`](synchronization.md) |
-| Place discovery | gateway fusion | [`place-discovery.md`](place-discovery.md) |
+| Place discovery (**wave 1 built** — enrichment + correlation; ADRs 0011/0012) | gateway fusion | [`place-discovery.md`](place-discovery.md) |
 | Traffic data | pipeline → gateway | [`traffic-data.md`](traffic-data.md) |
 | Crowd telemetry | gateway ingest + worker | [`crowd-telemetry.md`](crowd-telemetry.md) |
 | Historical reliability | worker archive → gateway | [`historical-reliability.md`](historical-reliability.md) |

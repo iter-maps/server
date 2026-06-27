@@ -66,7 +66,7 @@ externalized, regenerable artifacts — so the same code runs as a single
 | Gateway surface — tiles, styles, glyphs, sprite, overlays, health, freshness manifest, live-trains, offline extract/bundle, routing/geocoding proxy, liveness/readiness | ✅ done, tested |
 | Region model (nested profiles, `ITER_REGION`) | ✅ done |
 | `iter-pipeline` runner + `iter-worker` scheduler (frameworks + HEALTH / FL-GTFS) | ✅ frameworks |
-| Containerization (multi-stage Dockerfiles, compose, `go-pmtiles`) + strict CI (124 tests) | ✅ done |
+| Containerization (multi-stage Dockerfiles, compose, `go-pmtiles`) + strict CI (167 tests) | ✅ done |
 | Data pipeline — OSM fetch + planetiler tiles (region-driven) | ✅ done, proven on real output |
 | Data pipeline — OSM clip + GTFS fetch + OTP graph build (region-driven) | ✅ done, proven on real output |
 | Data pipeline — civici extraction + Photon geocoding index (region-driven) | ✅ done, proven on real data |
@@ -107,8 +107,11 @@ cargo run -p iter-gateway        # serves on :8090 by default
 ```
 crates/
   iter-core/        shared primitives (config, error envelope, health, shutdown)
-  iter-contracts/   wire-contract DTOs (geo, health, live-trains, offline)
+  iter-contracts/   wire-contract DTOs (geo, health, live-trains, offline, places)
+  iter-region/      the region model (nested profiles, resolver)
   iter-gateway/     edge/BFF service (axum)
+  iter-pipeline/    build tier — idempotent data-prep orchestrator
+  iter-worker/      background jobs (FL-GTFS, RT polling, reliability)
 docs/               architecture, API contract, roadmap   (CC-BY-4.0)
 ```
 

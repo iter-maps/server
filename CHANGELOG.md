@@ -65,13 +65,15 @@ Commit history.
   OTP service loads the graph from `/data/graph`; Photon serves the index from
   `/data/photon` (read-write — embedded OpenSearch).
 - **CI & governance** — a strict CI (fmt, clippy `-D warnings`, build, test,
-  `cargo doc -D warnings`, cargo-deny, typos, REUSE, hadolint, coverage); 124
-  tests; AGPL-3.0 + REUSE licensing; the ADR process (ADRs 0001–0008); CLAUDE.md;
+  `cargo doc -D warnings`, cargo-deny, typos, REUSE, hadolint, coverage); 167
+  tests; AGPL-3.0 + REUSE licensing; the ADR process (ADRs 0001–0012); CLAUDE.md;
   CONTRIBUTING (DCO), code of conduct, security, telemetry, and data-license
   docs; the deferred-work roadmap.
 
 ### Not yet implemented
 
-The remaining data-production steps (overlay geometry, FL NeTEx→GTFS), the place
-enrichment/discovery layer, and the planned forward-looking capabilities — all
-tracked in [`docs/roadmap/`](docs/roadmap/).
+The remaining data-production steps (overlay geometry, FL NeTEx→GTFS), the
+deferred place-discovery waves (Wikivoyage editorial, commercial place/traffic
+overlays — wave 1 keyless enrichment + correlation is built), the worker jobs
+(RT-reliability rollups, daily graph refresh), and the planned forward-looking
+capabilities — all tracked in [`docs/roadmap/`](docs/roadmap/).
