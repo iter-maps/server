@@ -78,20 +78,28 @@ async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::R
     let mut tmp = dest.to_path_buf().into_os_string();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    // The NAP `checkedResource` is large and slow to stream; override the
-    // client's short default with a generous per-request timeout.
-    let mut resp = client
-        .get(url)
-        .timeout(Duration::from_secs(300))
-        .send()
-        .await?
-        .error_for_status()?;
-    let mut file = tokio::fs::File::create(&tmp).await?;
-    while let Some(chunk) = resp.chunk().await? {
-        file.write_all(&chunk).await?;
+
+    // Stream into the temp file; on any failure, clean it up so a partial
+    // download never lingers (the NAP `checkedResource` streams slowly, so the
+    // request gets a generous per-request timeout overriding the client's).
+    let fetch = async {
+        let mut resp = client
+            .get(url)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .await?
+            .error_for_status()?;
+        let mut file = tokio::fs::File::create(&tmp).await?;
+        while let Some(chunk) = resp.chunk().await? {
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        Ok::<(), anyhow::Error>(())
+    };
+    if let Err(e) = fetch.await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
     }
-    file.flush().await?;
-    drop(file);
     tokio::fs::rename(&tmp, dest).await?;
     Ok(())
 }
