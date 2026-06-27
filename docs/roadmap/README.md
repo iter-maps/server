@@ -51,28 +51,21 @@ unbuilt; tracked here so the orchestration boundary stays explicit.
 ## 2. Remaining Rust capabilities
 
 Rust-native surfaces. The gateway already serves tiles, styles, glyphs, sprite,
-overlays, client health, and reverse-proxies routing/geocoding; the pipeline and
-worker frameworks are in place. What remains:
+overlays, client health + freshness manifest, **live-trains** (ViaggiaTreno
+proxy with TTL cache + single-flight), and **offline extract**; it
+reverse-proxies routing/geocoding. The pipeline and worker frameworks are in
+place. What remains:
 
-- **Live-trains** — `GET /trenitalia/*`: normalized, TTL-cached, single-flighted
-  proxy over ViaggiaTreno (station search, departures/arrivals boards). Deferred
-  because the exact upstream field names and the DST-aware `Date.toString()`
-  date-param need validating against the real (cleartext, external) API.
-  Design: concept doc 11 — gateway-and-external-providers,
-  concept doc 02-api-contracts/live-trains.
-- **Offline extract / bundle** — `GET /offline/{extract,bundle}`: range-read the
-  clustered PMTiles and zip a bundle, with the abuse guards (6 deg² cap, z14
-  clamp, 3 concurrent — already typed in `iter-contracts::offline`) that are the
-  only protection on this auth-less surface. Needs the pinned `go-pmtiles` CLI
-  (or a Rust PMTiles v3 reader, the planned `iter-pmtiles` crate) to do the
-  range-extract.
+- **Offline bundle** — `GET /offline/bundle`: the extract endpoint is done; the
+  bundle still needs the zip assembly (area.pmtiles + styles rewritten to
+  `area.pmtiles` + glyphs + sprite + overlays + `manifest.json`, STORE zip).
   Design: concept doc 07 — basemap-and-tiles,
-  concept doc 02-api-contracts/offline ·
-  Decision: ADR 0010.
-- **Freshness manifest** — `GET /manifest`: per-artifact `{builtAt, etag}` so
-  cache-first clients check staleness in one request (the typed `FreshnessManifest`
-  already exists; the gateway's `/health` + `/livez` + `/readyz` are done).
-  Design: concept doc 18 — client-facing-contract-and-load §4.
+  concept doc 02-api-contracts/offline · Decision: repo ADR 0007.
+- **Live-trains live verification** — the proxy, cache, normalization, and
+  date-param are built and unit-tested, but the exact ViaggiaTreno JSON field
+  names and the `Date.toString()` date-param are reconstructed from the design
+  notes and must be confirmed against the real (cleartext, external) API; see the
+  module-level VERIFICATION NEEDED note.
 - **Pipeline engine steps + refresh triggers** — the runner framework, the
   `FORCE_*`/`SKIP_*` knobs, and the HEALTH step are implemented; the engine-
   orchestration steps (§1) and the daily (`--gtfs`) / monthly (`--osm`) refresh

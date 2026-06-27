@@ -51,3 +51,4 @@ a typo) do not need one.
 - [0004](0004-single-gateway-binary.md) — One gateway binary for all Rust-owned surfaces
 - [0005](0005-layered-licensing-reuse-dco.md) — Layered licensing, REUSE, and DCO
 - [0006](0006-strict-ci-and-testing-bar.md) — Strict CI and the testing bar
+- [0007](0007-offline-extraction-via-go-pmtiles.md) — Offline extraction via the go-pmtiles CLI
