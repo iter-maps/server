@@ -1,0 +1,22 @@
+# Rust build output
+/target/
+
+# Environment / secrets (never committed)
+.env
+.env.*
+!.env.example
+
+# Regenerable data artifacts — fetched/built on first boot, never committed (P7).
+# Routing graph, geocoding index, basemap tiles, OSM/GTFS extracts and the like
+# all derive from public sources and are disposable.
+/data/
+*.osm.pbf
+*.osm.bz2
+*.pmtiles
+*.gtfs.zip
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
