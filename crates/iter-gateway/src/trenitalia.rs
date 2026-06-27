@@ -2,11 +2,11 @@
 //! single-flighted proxy over RFI's unofficial ViaggiaTreno API. The client
 //! never touches the flaky cleartext upstream directly.
 //!
-//! VERIFICATION NEEDED against the live API before production: the exact
-//! upstream JSON field names below and the `Date.toString()` date-param format
-//! are reconstructed from the design notes, not yet confirmed end-to-end. The
-//! validation, caching, normalization, and date-param formatting are unit-tested
-//! here; only the live wire shape is unverified.
+//! Verified end-to-end against the live API (2026-06-28): the upstream field
+//! names below and the `Date.toString()` date-param are confirmed — station
+//! search, the regional station list (with lat/lon), and the arrivals/departures
+//! boards all return correctly-normalized real data. Validation, caching,
+//! normalization, and the date-param are also unit-tested here.
 
 use std::time::Duration;
 

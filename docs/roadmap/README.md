@@ -59,11 +59,10 @@ proxy with TTL cache + single-flight), and **offline extract + bundle**
 (go-pmtiles in the gateway image); it reverse-proxies routing/geocoding. The
 pipeline and worker frameworks are in place. What remains:
 
-- **Live-trains live verification** — the proxy, cache, normalization, and
-  date-param are built and unit-tested, but the exact ViaggiaTreno JSON field
-  names and the `Date.toString()` date-param are reconstructed from the design
-  notes and must be confirmed against the real (cleartext, external) API; see the
-  module-level VERIFICATION NEEDED note.
+- **Live-trains** ✅ verified — the ViaggiaTreno proxy (cache, normalization,
+  `Date.toString()` date-param) is confirmed end-to-end against the real API
+  (2026-06-28): station search, the regional list (with lat/lon), and the
+  arrivals/departures boards return correctly-normalized real data.
 - **Overlay geometry** ✅ done (pure Rust, ADR 0014) — `transit-lines` (way-union
   `MultiLineString` per line, GTFS colours) and `metro-stations` (concave-hull
   concourses + per-direction platform strips offset along the real track + named
