@@ -1,17 +1,6 @@
-mod config;
-mod glyphs;
-mod health;
-mod http;
-mod overlays;
-mod proxy;
-mod router;
-mod sprite;
-mod state;
-mod styles;
-mod tiles;
-
-use config::GatewayConfig;
-use state::AppState;
+use iter_gateway::config::GatewayConfig;
+use iter_gateway::router;
+use iter_gateway::state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
