@@ -4,7 +4,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
-use crate::{glyphs, health, sprite, styles, tiles};
+use crate::{glyphs, health, overlays, sprite, styles, tiles};
 
 /// Assemble the gateway router. Capability modules (tiles, styles, overlays,
 /// offline, live-trains, routing/geocoding proxy, client health) attach their
@@ -15,6 +15,7 @@ pub fn build(state: AppState) -> Router {
         .route("/readyz", get(health::readyz))
         .route("/styles/{file}", get(styles::style))
         .route("/glyphs/{fontstack}/{range}", get(glyphs::glyph))
+        .route("/overlays/{file}", get(overlays::overlay))
         .merge(tiles::router(&state))
         .merge(sprite::router(&state))
         .layer(TraceLayer::new_for_http())

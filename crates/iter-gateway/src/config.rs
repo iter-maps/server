@@ -14,6 +14,7 @@ pub struct GatewayConfig {
     pub styles_dir: PathBuf,
     pub glyphs_dir: PathBuf,
     pub sprite_dir: PathBuf,
+    pub overlays_dir: PathBuf,
 }
 
 impl GatewayConfig {
@@ -27,6 +28,7 @@ impl GatewayConfig {
             styles_dir: dir("STYLES_DIR", &data_dir, "output/styles"),
             glyphs_dir: dir("GLYPHS_DIR", &data_dir, "static/glyphs"),
             sprite_dir: dir("SPRITE_DIR", &data_dir, "static/sprite"),
+            overlays_dir: dir("OVERLAYS_DIR", &data_dir, "output/overlays"),
             data_dir,
         })
     }

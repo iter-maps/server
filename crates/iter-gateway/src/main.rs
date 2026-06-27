@@ -2,6 +2,7 @@ mod config;
 mod glyphs;
 mod health;
 mod http;
+mod overlays;
 mod router;
 mod sprite;
 mod state;
