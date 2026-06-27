@@ -10,7 +10,9 @@ pub fn init(service: &str) {
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
     let json = std::env::var("ITER_LOG_FORMAT").as_deref() == Ok("json");
-    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_target(true);
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true);
 
     if json {
         builder.json().init();

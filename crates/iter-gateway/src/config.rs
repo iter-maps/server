@@ -36,7 +36,10 @@ impl GatewayConfig {
             bind: format!("{host}:{port}").parse()?,
             otp_url: config::or("OTP_URL", "http://otp:8080"),
             photon_url: config::or("PHOTON_URL", "http://photon:2322"),
-            upstream_timeout: std::time::Duration::from_secs(config::parse("UPSTREAM_TIMEOUT_SECS", 30)),
+            upstream_timeout: std::time::Duration::from_secs(config::parse(
+                "UPSTREAM_TIMEOUT_SECS",
+                30,
+            )),
             version: config::or("ITER_VERSION", env!("CARGO_PKG_VERSION")),
             tiles_dir: dir("TILES_DIR", &data_dir, "output/tiles"),
             styles_dir: dir("STYLES_DIR", &data_dir, "output/styles"),
@@ -51,5 +54,7 @@ impl GatewayConfig {
 
 /// An artifact directory: explicit env override, else derived from `data_dir`.
 fn dir(env_key: &str, data_dir: &Path, rel: &str) -> PathBuf {
-    config::opt(env_key).map(PathBuf::from).unwrap_or_else(|| data_dir.join(rel))
+    config::opt(env_key)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join(rel))
 }

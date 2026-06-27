@@ -25,7 +25,10 @@ impl Job for FlGtfsBuild {
     }
 
     async fn run(&self) -> anyhow::Result<()> {
-        if !tokio::fs::try_exists(&self.netex_path).await.unwrap_or(false) {
+        if !tokio::fs::try_exists(&self.netex_path)
+            .await
+            .unwrap_or(false)
+        {
             tracing::debug!(
                 source = %self.netex_path.display(),
                 "fl-gtfs: no NeTEx source present; nothing to build"

@@ -28,7 +28,12 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn new(status: u16, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into(), details: None, status }
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+            status,
+        }
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
@@ -89,7 +94,10 @@ mod tests {
         let v = err.envelope();
         assert_eq!(v["error"]["code"], "AREA_TOO_LARGE");
         assert_eq!(v["error"]["details"]["cap"], 6);
-        assert!(v["error"].get("status").is_none(), "status is transport-level, not serialized");
+        assert!(
+            v["error"].get("status").is_none(),
+            "status is transport-level, not serialized"
+        );
     }
 
     #[test]

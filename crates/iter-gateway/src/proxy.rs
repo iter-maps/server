@@ -35,7 +35,10 @@ pub async fn routing(
     relay(sent, "otp").await
 }
 
-pub async fn geocode_api(State(state): State<AppState>, RawQuery(q): RawQuery) -> ApiResult<Response> {
+pub async fn geocode_api(
+    State(state): State<AppState>,
+    RawQuery(q): RawQuery,
+) -> ApiResult<Response> {
     geocode(&state, "/api", q).await
 }
 

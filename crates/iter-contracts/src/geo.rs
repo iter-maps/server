@@ -32,7 +32,12 @@ impl BBox {
         let [min_lon, min_lat, max_lon, max_lat] = parts[..] else {
             return Err(BBoxError::Invalid);
         };
-        let b = BBox { min_lon, min_lat, max_lon, max_lat };
+        let b = BBox {
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+        };
         b.validate()?;
         Ok(b)
     }
@@ -69,8 +74,14 @@ mod tests {
 
     #[test]
     fn rejects_degenerate_and_out_of_range() {
-        assert!(matches!(BBox::parse("12,42,12,43"), Err(BBoxError::Degenerate)));
-        assert!(matches!(BBox::parse("12,42,200,43"), Err(BBoxError::OutOfRange)));
+        assert!(matches!(
+            BBox::parse("12,42,12,43"),
+            Err(BBoxError::Degenerate)
+        ));
+        assert!(matches!(
+            BBox::parse("12,42,200,43"),
+            Err(BBoxError::OutOfRange)
+        ));
         assert!(matches!(BBox::parse("12,42,13"), Err(BBoxError::Invalid)));
     }
 }

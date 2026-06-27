@@ -26,8 +26,9 @@ impl Step for WriteHealth {
 
     async fn run(&self, ctx: &Context) -> anyhow::Result<()> {
         let tiles_built_at = mtime_iso(&ctx.output("output/tiles/roma.pmtiles")).await;
-        let gtfs_loaded =
-            mtime_iso(&ctx.output("graph.obj")).await.unwrap_or_else(|| "unknown".to_string());
+        let gtfs_loaded = mtime_iso(&ctx.output("graph.obj"))
+            .await
+            .unwrap_or_else(|| "unknown".to_string());
 
         let status = if tiles_built_at.is_some() && gtfs_loaded != "unknown" {
             Status::Ok
@@ -51,5 +52,7 @@ impl Step for WriteHealth {
 
 async fn mtime_iso(path: &Path) -> Option<String> {
     let modified = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
-    jiff::Timestamp::try_from(modified).ok().map(|t| t.to_string())
+    jiff::Timestamp::try_from(modified)
+        .ok()
+        .map(|t| t.to_string())
 }

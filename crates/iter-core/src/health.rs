@@ -33,11 +33,19 @@ pub struct Check {
 
 impl Check {
     pub fn ok(name: impl Into<String>) -> Self {
-        Self { name: name.into(), status: Status::Ok, detail: None }
+        Self {
+            name: name.into(),
+            status: Status::Ok,
+            detail: None,
+        }
     }
 
     pub fn down(name: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { name: name.into(), status: Status::Down, detail: Some(detail.into()) }
+        Self {
+            name: name.into(),
+            status: Status::Down,
+            detail: Some(detail.into()),
+        }
     }
 }
 

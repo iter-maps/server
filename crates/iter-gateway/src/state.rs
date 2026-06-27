@@ -18,6 +18,9 @@ impl AppState {
             .timeout(cfg.upstream_timeout)
             .user_agent(concat!("iter-gateway/", env!("CARGO_PKG_VERSION")))
             .build()?;
-        Ok(Self { cfg: Arc::new(cfg), http })
+        Ok(Self {
+            cfg: Arc::new(cfg),
+            http,
+        })
     }
 }

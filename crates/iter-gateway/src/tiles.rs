@@ -16,8 +16,10 @@ pub fn router(state: &AppState) -> Router<AppState> {
     // does not fall back to precompressed siblings unless explicitly enabled.
     let serve = ServeDir::new(&state.cfg.tiles_dir).append_index_html_on_directories(false);
 
-    Router::new().nest_service("/tiles", serve).layer(SetResponseHeaderLayer::overriding(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400, immutable"),
-    ))
+    Router::new()
+        .nest_service("/tiles", serve)
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=86400, immutable"),
+        ))
 }

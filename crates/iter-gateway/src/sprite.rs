@@ -11,8 +11,10 @@ use crate::state::AppState;
 pub fn router(state: &AppState) -> Router<AppState> {
     let serve = ServeDir::new(&state.cfg.sprite_dir).append_index_html_on_directories(false);
 
-    Router::new().nest_service("/sprite", serve).layer(SetResponseHeaderLayer::overriding(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
-    ))
+    Router::new()
+        .nest_service("/sprite", serve)
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=86400"),
+        ))
 }
