@@ -35,6 +35,7 @@ pub fn build(state: AppState) -> Router {
         .route("/trenitalia/departures", get(trenitalia::departures))
         .route("/trenitalia/arrivals", get(trenitalia::arrivals))
         .route("/offline/extract", get(offline::extract))
+        .route("/offline/bundle", get(offline::bundle))
         .merge(tiles::router(&state))
         .merge(sprite::router(&state))
         .layer(TraceLayer::new_for_http())

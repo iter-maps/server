@@ -34,6 +34,7 @@ bytes = "1"
 jiff = "0.2"
 async-trait = "0.1"
 tempfile = "3"
+zip = { version = "2", default-features = false }
 
 iter-core = { path = "crates/iter-core" }
 iter-contracts = { path = "crates/iter-contracts" }

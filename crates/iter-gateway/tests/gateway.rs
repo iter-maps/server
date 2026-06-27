@@ -318,6 +318,15 @@ async fn offline_area_too_large_is_413() {
 }
 
 #[tokio::test]
+async fn offline_bundle_missing_bbox_is_400() {
+    let (_d, app) = populated();
+    let (status, _, body) = send(&app, get("/offline/bundle")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"]["code"], "BBOX_REQUIRED");
+}
+
+#[tokio::test]
 async fn offline_concurrency_gate_returns_503_when_full() {
     let (_d, state) = populated_state();
     let gate = state.offline_gate.clone();
