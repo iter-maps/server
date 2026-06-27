@@ -3,6 +3,7 @@ mod glyphs;
 mod health;
 mod http;
 mod overlays;
+mod proxy;
 mod router;
 mod sprite;
 mod state;
@@ -18,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = GatewayConfig::from_env()?;
     let bind = cfg.bind;
-    let app = router::build(AppState::new(cfg));
+    let app = router::build(AppState::new(cfg)?);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, version = env!("CARGO_PKG_VERSION"), "iter-gateway listening");

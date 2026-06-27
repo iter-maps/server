@@ -8,6 +8,12 @@ use iter_core::config;
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
     pub bind: SocketAddr,
+    /// Internal URL of the OTP routing engine.
+    pub otp_url: String,
+    /// Internal URL of the Photon geocoder.
+    pub photon_url: String,
+    /// Upstream request timeout.
+    pub upstream_timeout: std::time::Duration,
     /// Root of the read-only artifact tree the pipeline produces.
     pub data_dir: PathBuf,
     pub tiles_dir: PathBuf,
@@ -24,6 +30,9 @@ impl GatewayConfig {
         let data_dir = PathBuf::from(config::or("DATA_DIR", "/data"));
         Ok(Self {
             bind: format!("{host}:{port}").parse()?,
+            otp_url: config::or("OTP_URL", "http://otp:8080"),
+            photon_url: config::or("PHOTON_URL", "http://photon:2322"),
+            upstream_timeout: std::time::Duration::from_secs(config::parse("UPSTREAM_TIMEOUT_SECS", 30)),
             tiles_dir: dir("TILES_DIR", &data_dir, "output/tiles"),
             styles_dir: dir("STYLES_DIR", &data_dir, "output/styles"),
             glyphs_dir: dir("GLYPHS_DIR", &data_dir, "static/glyphs"),
