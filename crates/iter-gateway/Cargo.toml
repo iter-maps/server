@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 description = "Iter Maps edge/BFF: serves tiles, styles, overlays, offline, live-trains and health; reverse-proxies routing and geocoding."
 
 [[bin]]

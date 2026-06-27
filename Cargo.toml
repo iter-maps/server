@@ -15,6 +15,7 @@ rust-version = "1.85"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/iter-maps/server"
 authors = ["Iter Maps contributors"]
+publish = false
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "fs", "time", "sync"] }

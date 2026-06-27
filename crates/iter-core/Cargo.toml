@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 description = "Shared primitives for the Iter Maps backend: config, error envelope, tracing, shutdown, health."
 
 [dependencies]
