@@ -16,7 +16,9 @@ path = "src/main.rs"
 [dependencies]
 iter-core = { workspace = true }
 iter-contracts = { workspace = true }
-tokio = { workspace = true }
+iter-region = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process"] }
+reqwest = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 serde_json = { workspace = true }

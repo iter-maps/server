@@ -31,7 +31,25 @@ COPY --from=builder /build/target/release/iter-gateway /usr/local/bin/iter-gatew
 EXPOSE 8090
 ENTRYPOINT ["iter-gateway"]
 
-FROM runtime AS pipeline
+# Data-prep image: the pipeline binary plus the external build toolchain
+# (planetiler + JVM 21, osmium, go-pmtiles, zstd/unzip). Heavier than the slim
+# runtime, so it gets its own base.
+FROM eclipse-temurin:21-jre-jammy AS dataprep
+ARG PLANETILER_VERSION=0.10.2
+ARG PMTILES_VERSION=1.30.3
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl osmium-tool zstd unzip \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /opt/planetiler.jar \
+      "https://github.com/onthegomap/planetiler/releases/download/v${PLANETILER_VERSION}/planetiler.jar" \
+ && curl -fsSL -o /tmp/pmtiles.tgz \
+      "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz" \
+ && tar -xzf /tmp/pmtiles.tgz -C /usr/local/bin pmtiles \
+ && rm /tmp/pmtiles.tgz
+ENV DATA_DIR=/data REGIONS_DIR=/regions PLANETILER_JAR=/opt/planetiler.jar
+COPY regions /regions
+
+FROM dataprep AS pipeline
 COPY --from=builder /build/target/release/iter-pipeline /usr/local/bin/iter-pipeline
 ENTRYPOINT ["iter-pipeline"]
 

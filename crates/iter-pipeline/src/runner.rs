@@ -66,10 +66,7 @@ mod tests {
     }
 
     fn ctx() -> Context {
-        Context {
-            data_dir: std::path::PathBuf::from("/tmp"),
-            version: "test".to_string(),
-        }
+        Context::for_test(std::path::PathBuf::from("/tmp"), "test")
     }
 
     #[tokio::test]

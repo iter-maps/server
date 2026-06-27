@@ -25,7 +25,8 @@ impl Step for WriteHealth {
     }
 
     async fn run(&self, ctx: &Context) -> anyhow::Result<()> {
-        let tiles_built_at = mtime_iso(&ctx.output("output/tiles/roma.pmtiles")).await;
+        let tiles_built_at =
+            mtime_iso(&ctx.output(&format!("output/tiles/{}", ctx.tiles_filename()))).await;
         let gtfs_loaded = mtime_iso(&ctx.output("graph.obj"))
             .await
             .unwrap_or_else(|| "unknown".to_string());
@@ -64,10 +65,7 @@ mod tests {
     use super::*;
 
     fn ctx(data_dir: &std::path::Path, version: &str) -> Context {
-        Context {
-            data_dir: data_dir.to_path_buf(),
-            version: version.to_string(),
-        }
+        Context::for_test(data_dir.to_path_buf(), version)
     }
 
     #[tokio::test]
@@ -89,7 +87,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("output/tiles")).unwrap();
-        std::fs::write(root.join("output/tiles/roma.pmtiles"), b"x").unwrap();
+        std::fs::write(root.join("output/tiles/rome.pmtiles"), b"x").unwrap();
         std::fs::write(root.join("graph.obj"), b"x").unwrap();
 
         WriteHealth.run(&ctx(root, "1.0.0")).await.unwrap();
