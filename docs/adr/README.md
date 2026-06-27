@@ -58,3 +58,4 @@ a typo) do not need one.
 - [0011](0011-place-enrichment-open-first-in-bff.md) — Place enrichment: open-first fusion in the BFF
 - [0012](0012-address-correlation-build-it-yourself.md) — Address correlation: build the address→places index ourselves
 - [0013](0013-gateway-resolves-region.md) — The gateway resolves the region at startup
+- [0014](0014-pure-rust-overlay-geometry.md) — Pure-Rust overlay geometry (no Python/shapely)

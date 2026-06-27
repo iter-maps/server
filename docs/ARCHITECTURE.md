@@ -79,15 +79,17 @@ style render, build-config generation, overlay generation, health write).
 
 Implemented steps: **OSM** (fetch the regional PBF) → **CLIP** (osmium carves the
 routing extent) → **GTFS** (fetch the region's feeds) → **BUILD_CONFIG** (pin
-OTP's inputs with stable feedIds) → **GRAPH** (OTP `--build --save`) → **CIVICI**
-(Overture house numbers via DuckDB) → **PHOTON** (geocoding index import) →
-**PLACES** (addressed POIs for the correlation index) → **TILES** (planetiler
-render) → **HEALTH**. OTP's inputs and its `graph.obj`
+OTP's inputs with stable feedIds) → **GRAPH** (OTP `--build --save`) → **OVERLAY**
+(transit overlays from the clip) → **CIVICI** (Overture house numbers via DuckDB)
+→ **PHOTON** (geocoding index import) → **PLACES** (addressed POIs for the
+correlation index) → **TILES** (planetiler render) → **HEALTH**. OTP's inputs and its `graph.obj`
 share `/data/graph` (loaded read-only by OTP, ADR 0009); the Photon index lives
 at `/data/photon` and is served read-write (embedded OpenSearch; ADR 0010), with
 civici baked in as low-importance house docs so location bias picks the right
-number. Routing/geocoding steps no-op for a region lacking that config. STYLES
-and OVERLAY land next (roadmap).
+number. **OVERLAY** generates the transit overlays from the OSM clip in pure Rust
+(`transit-lines` done; `metro-stations` geometry next — ADR 0014). Routing/
+geocoding/overlay steps no-op for a region lacking that config. STYLES lands next
+(roadmap).
 
 ### `iter-worker` (background tier)
 

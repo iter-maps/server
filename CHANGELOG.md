@@ -49,13 +49,16 @@ Commit history.
   (OTP input pinning with stable feedIds), GRAPH (OTP `--build --save`), CIVICI
   (Italian house numbers from Overture addresses via DuckDB-by-bbox → Photon
   house docs), PHOTON (geocoding index import, civici appended, embedded
-  OpenSearch, `-extra-tags` for the enrichment back-links), basemap tiles via
-  planetiler (clustered PMTiles v3, z0-14), and HEALTH. Proven end-to-end on
-  real data: planetiler tiles served + go-pmtiles offline extract; a real OTP
-  graph built from a region-clipped OSM + ATAC GTFS, served and reachable as a
-  real `plan` through the gateway (ADR 0009); and a real Photon index (9,237
-  Overture civici over central Rome + a country dump) served and queried for a
-  Rome civico through the gateway (ADR 0010).
+  OpenSearch, `-extra-tags` for the enrichment back-links), OVERLAY (transit
+  overlays from the OSM clip, pure-Rust — ADR 0014), basemap tiles via planetiler
+  (clustered PMTiles v3, z0-14), and HEALTH. Proven end-to-end on real data:
+  planetiler tiles served + go-pmtiles offline extract; a real OTP graph built
+  from a region-clipped OSM + ATAC GTFS, served and reachable as a real `plan`
+  through the gateway (ADR 0009); a real Photon index (9,237 Overture civici over
+  central Rome + a country dump) served and queried for a Rome civico through the
+  gateway (ADR 0010); and the `transit-lines` overlay generated from the real
+  Rome clip (9 line features — metro A/B/C + trams 2/3/5/8/14/19 — with way-union
+  geometry and GTFS colours).
 - **Worker** — a graceful-shutdown job scheduler with the FL-GTFS build job.
 - **Containerization** — multi-stage Dockerfiles, a podman/docker compose stack
   with a dev override, `go-pmtiles` in the gateway image, a **data-prep image**

@@ -63,11 +63,21 @@ pipeline and worker frameworks are in place. What remains:
   names and the `Date.toString()` date-param are reconstructed from the design
   notes and must be confirmed against the real (cleartext, external) API; see the
   module-level VERIFICATION NEEDED note.
-- **Pipeline engine steps + refresh triggers** — the runner framework, the
-  `FORCE_*`/`SKIP_*` knobs, and the HEALTH step are implemented; the engine-
-  orchestration steps (§1) and the daily (`--gtfs`) / monthly (`--osm`) refresh
-  triggers remain. The worker scheduler + FL-GTFS job skeleton are in place; the
-  FL NeTEx→GTFS conversion and RT-polling jobs land per §1.
+- **Overlay geometry** — `transit-lines` ✅ done (pure Rust, ADR 0014: union the
+  ATAC metro/tram track ways from the OSM clip into one `MultiLineString` per
+  line, shared track deduped by way id, GTFS colours joined; proven on the real
+  Rome clip → 9 line features). **Remaining:** `metro-stations` 🚧 — the
+  platform/concourse/exit cutout geometry (track-graph centreline walk, side-
+  offset platforms, `geo` concave-hull concourse, morphological close), plus the
+  `STYLES` render step.
+  Design: concept doc 09 — overlays-geometry · Decision: ADR 0014.
+- **Pipeline refresh triggers** — the runner framework, the `FORCE_*`/`SKIP_*`
+  knobs, and the build steps are implemented; the daily (`--gtfs` + graph) /
+  monthly (`--osm`) refresh **triggers** remain. Best realized as a scheduled
+  pipeline run (k8s CronJob / cron with `FORCE_GTFS`+`FORCE_GRAPH`) rather than a
+  job in the lean worker, which lacks the OTP build toolchain. The worker
+  scheduler is in place; the FL NeTEx→GTFS conversion and RT-polling jobs land
+  per §1.
   Design: concept doc 04 — data-pipeline, doc 12 — deployment-and-operations ·
   Decision: ADR 0007.
 

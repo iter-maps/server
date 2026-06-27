@@ -37,6 +37,9 @@ async-trait = "0.1"
 tempfile = "3"
 zip = { version = "2", default-features = false }
 toml = "0.8"
+osmpbf = "0.3"
+geo = "0.31"
+geojson = "0.24"
 
 iter-core = { path = "crates/iter-core" }
 iter-contracts = { path = "crates/iter-contracts" }

@@ -70,7 +70,8 @@ externalized, regenerable artifacts — so the same code runs as a single
 | Data pipeline — OSM fetch + planetiler tiles (region-driven) | ✅ done, proven on real output |
 | Data pipeline — OSM clip + GTFS fetch + OTP graph build (region-driven) | ✅ done, proven on real output |
 | Data pipeline — civici extraction + Photon geocoding index (region-driven) | ✅ done, proven on real data |
-| Data pipeline — overlays, NeTEx | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
+| Data pipeline — transit-lines overlay (region-driven, from OSM) | ✅ done, proven on real data |
+| Data pipeline — metro-stations overlay geometry, NeTEx | 🚧 see [`docs/roadmap/`](docs/roadmap/) |
 | Routing engine operational (OTP serving a real graph) | ✅ done, proven on real data |
 | Geocoding engine operational (Photon serving real index + civici) | ✅ done, proven on real data |
 | Place enrichment — image + summary for a tapped result (keyless, proxied) | ✅ done, proven on real data |

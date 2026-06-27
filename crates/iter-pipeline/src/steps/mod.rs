@@ -16,6 +16,7 @@ pub mod gtfs;
 pub mod health;
 pub mod osm;
 pub mod osm_clip;
+pub mod overlay;
 pub mod photon;
 pub mod places;
 pub mod tiles;
