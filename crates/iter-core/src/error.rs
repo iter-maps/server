@@ -105,4 +105,124 @@ mod tests {
         let v = ApiError::bad_request("missing bbox").envelope();
         assert!(v["error"].get("details").is_none());
     }
+
+    #[test]
+    fn new_sets_all_fields() {
+        let err = ApiError::new(418, "TEAPOT", "short and stout");
+        assert_eq!(err.status, 418);
+        assert_eq!(err.code, "TEAPOT");
+        assert_eq!(err.message, "short and stout");
+        assert!(err.details.is_none());
+    }
+
+    #[test]
+    fn bad_request_status_and_code() {
+        let err = ApiError::bad_request("nope");
+        assert_eq!(err.status, 400);
+        assert_eq!(err.code, code::BAD_REQUEST);
+        assert_eq!(err.message, "nope");
+    }
+
+    #[test]
+    fn not_found_status_and_code() {
+        let err = ApiError::not_found("gone");
+        assert_eq!(err.status, 404);
+        assert_eq!(err.code, code::NOT_FOUND);
+    }
+
+    #[test]
+    fn area_too_large_status_and_code() {
+        let err = ApiError::area_too_large("too big");
+        assert_eq!(err.status, 413);
+        assert_eq!(err.code, code::AREA_TOO_LARGE);
+    }
+
+    #[test]
+    fn busy_status_and_code() {
+        let err = ApiError::busy("later");
+        assert_eq!(err.status, 503);
+        assert_eq!(err.code, code::BUSY);
+    }
+
+    #[test]
+    fn upstream_unavailable_status_and_code() {
+        let err = ApiError::upstream_unavailable("down");
+        assert_eq!(err.status, 502);
+        assert_eq!(err.code, code::UPSTREAM_UNAVAILABLE);
+    }
+
+    #[test]
+    fn timeout_status_and_code() {
+        let err = ApiError::timeout("slow");
+        assert_eq!(err.status, 504);
+        assert_eq!(err.code, code::TIMEOUT);
+    }
+
+    #[test]
+    fn internal_status_and_code() {
+        let err = ApiError::internal("boom");
+        assert_eq!(err.status, 500);
+        assert_eq!(err.code, code::INTERNAL);
+    }
+
+    #[test]
+    fn code_constants_are_stable() {
+        assert_eq!(code::BAD_REQUEST, "BAD_REQUEST");
+        assert_eq!(code::NOT_FOUND, "NOT_FOUND");
+        assert_eq!(code::AREA_TOO_LARGE, "AREA_TOO_LARGE");
+        assert_eq!(code::BUSY, "BUSY");
+        assert_eq!(code::UPSTREAM_UNAVAILABLE, "UPSTREAM_UNAVAILABLE");
+        assert_eq!(code::UPSTREAM_ERROR, "UPSTREAM_ERROR");
+        assert_eq!(code::TIMEOUT, "TIMEOUT");
+        assert_eq!(code::INTERNAL, "INTERNAL");
+    }
+
+    #[test]
+    fn with_details_sets_details() {
+        let err = ApiError::internal("boom").with_details(serde_json::json!({ "trace": "abc" }));
+        assert_eq!(err.details, Some(serde_json::json!({ "trace": "abc" })));
+    }
+
+    #[test]
+    fn with_details_overwrites_previous() {
+        let err = ApiError::internal("boom")
+            .with_details(serde_json::json!(1))
+            .with_details(serde_json::json!(2));
+        assert_eq!(err.details, Some(serde_json::json!(2)));
+    }
+
+    #[test]
+    fn envelope_carries_message() {
+        let v = ApiError::not_found("no such tile").envelope();
+        assert_eq!(v["error"]["code"], "NOT_FOUND");
+        assert_eq!(v["error"]["message"], "no such tile");
+    }
+
+    #[test]
+    fn envelope_only_has_error_key() {
+        let v = ApiError::busy("queue full").envelope();
+        let obj = v.as_object().expect("envelope is an object");
+        assert_eq!(obj.len(), 1);
+        assert!(obj.contains_key("error"));
+    }
+
+    #[test]
+    fn status_never_serialized_even_with_details() {
+        let v = ApiError::timeout("slow")
+            .with_details(serde_json::json!({ "ms": 500 }))
+            .envelope();
+        assert!(v["error"].get("status").is_none());
+    }
+
+    #[test]
+    fn display_format() {
+        let err = ApiError::bad_request("missing bbox");
+        assert_eq!(err.to_string(), "400 (BAD_REQUEST): missing bbox");
+    }
+
+    #[test]
+    fn display_uses_custom_status_and_code() {
+        let err = ApiError::new(418, "TEAPOT", "no coffee");
+        assert_eq!(err.to_string(), "418 (TEAPOT): no coffee");
+    }
 }

@@ -44,3 +44,71 @@ pub struct Manifest {
     pub overlays: Vec<String>,
     pub note: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, to_value};
+
+    #[test]
+    fn manifest_camel_case_keys() {
+        let m = Manifest {
+            generator: "itermaps".to_string(),
+            created_at: "2026-06-27T00:00:00Z".to_string(),
+            bbox: [11.3, 41.1, 14.05, 43.35],
+            minzoom: 6,
+            maxzoom: 14,
+            pmtiles: "area.pmtiles".to_string(),
+            styles: vec!["light".to_string(), "dark".to_string()],
+            glyphs: true,
+            sprite: false,
+            overlays: vec!["stations".to_string()],
+            note: "__BASE_URL__ rewrite required".to_string(),
+        };
+        let v = to_value(&m).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "generator": "itermaps",
+                "createdAt": "2026-06-27T00:00:00Z",
+                "bbox": [11.3, 41.1, 14.05, 43.35],
+                "minzoom": 6,
+                "maxzoom": 14,
+                "pmtiles": "area.pmtiles",
+                "styles": ["light", "dark"],
+                "glyphs": true,
+                "sprite": false,
+                "overlays": ["stations"],
+                "note": "__BASE_URL__ rewrite required",
+            })
+        );
+    }
+
+    #[test]
+    fn error_codes_equal_string_values() {
+        assert_eq!(code::BBOX_REQUIRED, "BBOX_REQUIRED");
+        assert_eq!(code::BBOX_INVALID, "BBOX_INVALID");
+        assert_eq!(code::BBOX_OUT_OF_RANGE, "BBOX_OUT_OF_RANGE");
+        assert_eq!(code::BBOX_DEGENERATE, "BBOX_DEGENERATE");
+        assert_eq!(code::ZOOM_INVALID, "ZOOM_INVALID");
+        assert_eq!(code::AREA_TOO_LARGE, "AREA_TOO_LARGE");
+        assert_eq!(code::BUSY, "BUSY");
+        assert_eq!(code::EXTRACT_FAILED, "EXTRACT_FAILED");
+        assert_eq!(code::INTERNAL, "INTERNAL");
+    }
+
+    #[test]
+    fn style_whitelist_contents() {
+        assert_eq!(
+            STYLE_WHITELIST,
+            ["light", "dark", "transit-light", "transit-dark"]
+        );
+    }
+
+    #[test]
+    fn default_caps() {
+        assert_eq!(DEFAULT_MAX_AREA_DEG2, 6.0);
+        assert_eq!(DEFAULT_MAX_ZOOM, 14);
+        assert_eq!(DEFAULT_MAX_CONCURRENT, 3);
+    }
+}

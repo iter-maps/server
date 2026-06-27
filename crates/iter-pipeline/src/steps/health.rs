@@ -56,3 +56,55 @@ async fn mtime_iso(path: &Path) -> Option<String> {
         .ok()
         .map(|t| t.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+
+    fn ctx(data_dir: &std::path::Path, version: &str) -> Context {
+        Context {
+            data_dir: data_dir.to_path_buf(),
+            version: version.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn writes_degraded_when_artifacts_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        WriteHealth.run(&ctx(dir.path(), "9.9.9")).await.unwrap();
+
+        let bytes = std::fs::read(dir.path().join("output/health.json")).unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["status"], "degraded");
+        assert_eq!(v["version"], "9.9.9");
+        assert_eq!(v["gtfsLoaded"], "unknown");
+        assert_eq!(v["tilesBuiltAt"], Value::Null);
+        assert!(v["bootstrappedAt"].is_string());
+    }
+
+    #[tokio::test]
+    async fn writes_ok_when_artifacts_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("output/tiles")).unwrap();
+        std::fs::write(root.join("output/tiles/roma.pmtiles"), b"x").unwrap();
+        std::fs::write(root.join("graph.obj"), b"x").unwrap();
+
+        WriteHealth.run(&ctx(root, "1.0.0")).await.unwrap();
+
+        let bytes = std::fs::read(root.join("output/health.json")).unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert!(v["gtfsLoaded"].is_string());
+        assert_ne!(v["gtfsLoaded"], "unknown");
+        assert!(v["tilesBuiltAt"].is_string());
+    }
+
+    #[tokio::test]
+    async fn never_satisfied_so_it_always_reruns() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!WriteHealth.satisfied(&ctx(dir.path(), "t")).await);
+    }
+}
