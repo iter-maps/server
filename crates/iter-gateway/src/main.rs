@@ -1,7 +1,11 @@
 mod config;
+mod glyphs;
 mod health;
+mod http;
 mod router;
+mod sprite;
 mod state;
+mod styles;
 mod tiles;
 
 use config::GatewayConfig;
