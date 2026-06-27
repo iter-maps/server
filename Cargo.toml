@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/iter-core"]
+members = ["crates/iter-core", "crates/iter-contracts"]
 
 [workspace.package]
 version = "0.0.0"
@@ -26,6 +26,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 bytes = "1"
 
 iter-core = { path = "crates/iter-core" }
+iter-contracts = { path = "crates/iter-contracts" }
 
 [profile.release]
 opt-level = 3

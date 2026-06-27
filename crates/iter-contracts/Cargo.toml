@@ -1,0 +1,15 @@
+[package]
+name = "iter-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Wire-contract types for the Iter Maps backend (health, live-trains, offline, geo)."
+
+[dependencies]
+iter-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

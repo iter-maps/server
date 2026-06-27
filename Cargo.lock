@@ -28,6 +28,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "iter-contracts"
+version = "0.0.0"
+dependencies = [
+ "iter-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "iter-core"
 version = "0.0.0"
 dependencies = [
