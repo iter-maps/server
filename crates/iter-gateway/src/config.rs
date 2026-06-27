@@ -14,8 +14,12 @@ pub struct GatewayConfig {
     pub photon_url: String,
     /// Upstream request timeout.
     pub upstream_timeout: std::time::Duration,
+    /// Reported in the client health document.
+    pub version: String,
     /// Root of the read-only artifact tree the pipeline produces.
     pub data_dir: PathBuf,
+    /// Pipeline-written client health document.
+    pub health_path: PathBuf,
     pub tiles_dir: PathBuf,
     pub styles_dir: PathBuf,
     pub glyphs_dir: PathBuf,
@@ -33,11 +37,13 @@ impl GatewayConfig {
             otp_url: config::or("OTP_URL", "http://otp:8080"),
             photon_url: config::or("PHOTON_URL", "http://photon:2322"),
             upstream_timeout: std::time::Duration::from_secs(config::parse("UPSTREAM_TIMEOUT_SECS", 30)),
+            version: config::or("ITER_VERSION", env!("CARGO_PKG_VERSION")),
             tiles_dir: dir("TILES_DIR", &data_dir, "output/tiles"),
             styles_dir: dir("STYLES_DIR", &data_dir, "output/styles"),
             glyphs_dir: dir("GLYPHS_DIR", &data_dir, "static/glyphs"),
             sprite_dir: dir("SPRITE_DIR", &data_dir, "static/sprite"),
             overlays_dir: dir("OVERLAYS_DIR", &data_dir, "output/overlays"),
+            health_path: dir("HEALTH_PATH", &data_dir, "output/health.json"),
             data_dir,
         })
     }

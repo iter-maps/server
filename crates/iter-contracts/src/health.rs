@@ -6,15 +6,32 @@
 use iter_core::Status;
 use serde::Serialize;
 
-/// `GET /health` (and `/health.json`) on the static surface — five exact fields.
+/// `GET /health` (and `/health.json`) on the static surface — five exact fields
+/// the client reads to show an "update app" banner. `gtfs_loaded` is an
+/// ISO-8601 timestamp or the literal `"unknown"`; the timestamps are ISO-8601
+/// or null. There is deliberately no `graphBuiltAt`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StaticHealth {
     pub status: Status,
     pub version: String,
-    pub gtfs_loaded: bool,
+    pub gtfs_loaded: String,
     pub tiles_built_at: Option<String>,
     pub bootstrapped_at: Option<String>,
+}
+
+impl StaticHealth {
+    /// The "not yet bootstrapped" answer the gateway returns until the pipeline
+    /// has written the real `health.json`.
+    pub fn not_ready(version: impl Into<String>) -> Self {
+        Self {
+            status: Status::Degraded,
+            version: version.into(),
+            gtfs_loaded: "unknown".to_string(),
+            tiles_built_at: None,
+            bootstrapped_at: None,
+        }
+    }
 }
 
 /// `GET /health` on the gateway — diagnostics announcing mounted providers.

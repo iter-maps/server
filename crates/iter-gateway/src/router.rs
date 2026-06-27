@@ -13,6 +13,8 @@ pub fn build(state: AppState) -> Router {
     Router::new()
         .route("/livez", get(health::livez))
         .route("/readyz", get(health::readyz))
+        .route("/health", get(health::client_health))
+        .route("/health.json", get(health::client_health))
         .route("/styles/{file}", get(styles::style))
         .route("/glyphs/{fontstack}/{range}", get(glyphs::glyph))
         .route("/overlays/{file}", get(overlays::overlay))

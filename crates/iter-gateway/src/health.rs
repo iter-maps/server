@@ -4,8 +4,9 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use iter_contracts::health::StaticHealth;
 use iter_core::Status;
 use iter_core::health::{Check, Readiness};
 
@@ -29,4 +30,15 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
         _ => StatusCode::OK,
     };
     (code, Json(report))
+}
+
+/// Client-facing `GET /health` (and `/health.json`): the freshness document the
+/// app reads to prompt an update. The pipeline writes the real file from
+/// artifact mtimes; until then we answer a degraded "not bootstrapped" body.
+pub async fn client_health(State(state): State<AppState>) -> Response {
+    let cache = (header::CACHE_CONTROL, "public, max-age=60");
+    match tokio::fs::read(&state.cfg.health_path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "application/json"), cache], bytes).into_response(),
+        Err(_) => ([cache], Json(StaticHealth::not_ready(&state.cfg.version))).into_response(),
+    }
 }
