@@ -8,12 +8,12 @@ The goal is **clone + up** — no host-side tools, no manual downloads:
 git clone https://github.com/iter-maps/server
 cd server
 cp .env.example .env
-podman compose up        # Docker Compose v2 works too
+podman compose -f docker/compose.yaml up   # Docker Compose v2 works too
 ```
 
 First boot fetches and builds every artifact (graph, index, tiles, overlays) from
 public sources; later boots skip steps whose output already exists. For dev host
-ports on a LAN, add `-f compose.dev.yaml`.
+ports on a LAN, add `-f docker/compose.dev.yaml`.
 
 ## Building the Rust services
 

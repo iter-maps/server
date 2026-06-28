@@ -14,12 +14,12 @@ services:
   # steps (graph/index/tiles builds) land next (docs/roadmap). Exits 0.
   pipeline:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
       target: pipeline
     image: ghcr.io/iter-maps/server-pipeline:dev
     env_file:
-      - path: .env
+      - path: ../.env
         required: false
     volumes:
       - iter-data:/data
@@ -29,12 +29,12 @@ services:
   # Stateless edge / BFF. Scales wide. Reads the artifact tree read-only.
   gateway:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
       target: gateway
     image: ghcr.io/iter-maps/server-gateway:dev
     env_file:
-      - path: .env
+      - path: ../.env
         required: false
     depends_on:
       pipeline:
@@ -53,12 +53,12 @@ services:
   # Background jobs (FL-GTFS build; planned RT polling, reliability rollups).
   worker:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
       target: worker
     image: ghcr.io/iter-maps/server-worker:dev
     env_file:
-      - path: .env
+      - path: ../.env
         required: false
     depends_on:
       pipeline:
@@ -95,7 +95,7 @@ services:
 
   photon:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
       target: photon
     image: ghcr.io/iter-maps/server-photon:dev

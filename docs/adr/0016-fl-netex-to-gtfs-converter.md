@@ -53,7 +53,7 @@ deps):
   default pins a stable asset id; if the NAP rotates ids, resolving the asset by
   filename from the NAP catalog JSON is the documented fallback. The data carries
   `no_licence_no_contract` (NAP access regime, redistribution unstated — see
-  `DATA_LICENSES.md`).
+  `../DATA_LICENSES.md`).
 - Shapes (`shapes.txt`) are not stitched (OTP routes without them); a future
   refinement can derive them from OSM rail.
 

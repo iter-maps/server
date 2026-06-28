@@ -19,7 +19,6 @@ path = [
   ".gitignore",
   ".dockerignore",
   "docker/**",
-  "compose*.yaml",
   ".github/**",
   "deny.toml",
   "_typos.toml",
