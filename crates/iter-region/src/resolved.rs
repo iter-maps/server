@@ -159,7 +159,9 @@ mod tests {
                 [[feeds]]
                 id = "ATAC"
                 url = "https://example/atac.zip"
-                realtime = ["trip-updates"]
+                [[feeds.realtime]]
+                channel = "trip-updates"
+                url = "https://example/atac-tu.pb"
                 [[overlays]]
                 kind = "metro-stations"
             "#,
@@ -186,6 +188,12 @@ mod tests {
         // feeds accumulate down the chain (service-area, not operator).
         let ids: Vec<_> = r.feeds.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(ids, ["COTRAL", "TRENITALIA-FL", "ATAC"]);
+        // the realtime channel carries its source URL down the chain.
+        let atac = r.feeds.iter().find(|f| f.id == "ATAC").unwrap();
+        assert_eq!(
+            atac.realtime_url("trip-updates"),
+            Some("https://example/atac-tu.pb")
+        );
         assert_eq!(r.overlays.len(), 1);
     }
 
@@ -224,5 +232,11 @@ mod tests {
         assert!(ids.contains(&"COTRAL"));
         assert!(ids.contains(&"TRENITALIA-FL"));
         assert_eq!(r.live_trains.region_code, Some(5));
+        // the FL netex feed and the ATAC trip-updates channel carry their URLs.
+        let fl = r.feeds.iter().find(|f| f.id == "TRENITALIA-FL").unwrap();
+        assert_eq!(fl.source.as_deref(), Some("netex"));
+        assert!(fl.url.is_some());
+        let atac = r.feeds.iter().find(|f| f.id == "ATAC").unwrap();
+        assert!(atac.realtime_url("trip-updates").is_some());
     }
 }

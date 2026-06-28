@@ -27,3 +27,6 @@ insecure = true
 id = "TRENITALIA-FL"
 source = "netex"
 optional = true
+# Italian NAP (CCISS) public asset — RAP Lazio L2 (the L1 superset). The worker
+# downloads this, converts it to GTFS, and places it for the OTP graph build.
+url = "https://www.cciss.it/nap/mmtis/public/api/v1/download/blob/Asset/663391/checkedResource"

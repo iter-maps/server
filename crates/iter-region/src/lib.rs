@@ -8,5 +8,7 @@
 pub mod profile;
 pub mod resolved;
 
-pub use profile::{Civici, Extents, Feed, Geocoding, LiveTrains, Overlay, Profile};
+pub use profile::{
+    Civici, Extents, Feed, Geocoding, LiveTrains, Overlay, Profile, RealtimeChannel,
+};
 pub use resolved::{Resolved, resolve};

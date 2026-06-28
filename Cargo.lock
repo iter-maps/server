@@ -1000,6 +1000,7 @@ dependencies = [
  "async-trait",
  "flate2",
  "iter-core",
+ "iter-region",
  "iter-region-drivers",
  "prost",
  "quick-xml",

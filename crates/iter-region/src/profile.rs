@@ -73,14 +73,34 @@ pub struct Feed {
     /// Defaults to true when absent.
     pub enabled: Option<bool>,
     pub license: Option<String>,
-    /// GTFS-RT channels this feed publishes.
+    /// GTFS-RT channels this feed publishes, each with its source URL.
     #[serde(default)]
-    pub realtime: Vec<String>,
+    pub realtime: Vec<RealtimeChannel>,
+}
+
+/// One GTFS-RT channel a feed publishes (`trip-updates`, `vehicle-positions`,
+/// `service-alerts`) and the URL it streams from.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RealtimeChannel {
+    pub channel: String,
+    /// The `.pb` feed URL. Absent for a channel that's declared but not yet
+    /// consumed.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 impl Feed {
     pub fn is_enabled(&self) -> bool {
         self.enabled.unwrap_or(true)
+    }
+
+    /// The URL of a named realtime channel, if this feed declares it with one.
+    pub fn realtime_url(&self, channel: &str) -> Option<&str> {
+        self.realtime
+            .iter()
+            .find(|c| c.channel == channel)
+            .and_then(|c| c.url.as_deref())
     }
 }
 

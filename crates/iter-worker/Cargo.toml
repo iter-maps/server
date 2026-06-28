@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 iter-core = { workspace = true }
+iter-region = { workspace = true }
 iter-region-drivers = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

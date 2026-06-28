@@ -88,4 +88,8 @@ CMD ["serve", "-data-dir", "/data/photon", "-listen-ip", "0.0.0.0"]
 
 FROM runtime AS worker
 COPY --from=builder /build/target/release/iter-worker /usr/local/bin/iter-worker
+# The worker resolves the region at startup (ADR 0019) to derive its jobs and
+# their source URLs, so it needs the region tree.
+COPY regions /regions
+ENV REGIONS_DIR=/regions
 ENTRYPOINT ["iter-worker"]

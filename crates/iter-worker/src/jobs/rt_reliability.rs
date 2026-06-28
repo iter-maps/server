@@ -15,9 +15,6 @@ use prost::Message;
 use crate::gtfs_rt::FeedMessage;
 use crate::job::Job;
 
-const DEFAULT_TRIP_UPDATES_URL: &str =
-    "https://romamobilita.it/wp-content/uploads/shared/rome_rtgtfs_trip_updates_feed.pb";
-
 /// Drop |delay| beyond this (seconds) — incoherent feed rows would poison a
 /// percentile (concept 23 §2.1).
 const MAX_ABS_DELAY_S: i32 = 2 * 60 * 60;
@@ -28,9 +25,11 @@ pub struct RtReliability {
 }
 
 impl RtReliability {
-    pub fn from_env(http: reqwest::Client) -> Self {
+    /// Build from a feed's resolved trip-updates URL; `RT_TRIP_UPDATES_URL`
+    /// overrides it.
+    pub fn new(trip_updates_url: String, http: reqwest::Client) -> Self {
         Self {
-            trip_updates_url: config::or("RT_TRIP_UPDATES_URL", DEFAULT_TRIP_UPDATES_URL),
+            trip_updates_url: config::or("RT_TRIP_UPDATES_URL", &trip_updates_url),
             http,
         }
     }

@@ -63,3 +63,4 @@ a typo) do not need one.
 - [0016](0016-fl-netex-to-gtfs-converter.md) — FL NeTEx→GTFS converter in the worker
 - [0017](0017-region-drivers-config-and-code.md) — Region specifics: config-driven where possible, drivers where code is needed
 - [0018](0018-region-drivers-in-one-crate.md) — Region drivers live in one `iter-region-drivers` crate
+- [0019](0019-worker-resolves-region-feed-urls.md) — The worker resolves its region; feeds carry their source URLs

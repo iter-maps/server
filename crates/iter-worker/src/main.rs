@@ -6,44 +6,29 @@ mod scheduler;
 
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use iter_core::config;
-use job::Job;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     iter_core::telemetry::init("iter-worker");
 
     let data_dir = PathBuf::from(config::or("DATA_DIR", "/data"));
-    let netex_path = config::opt("GATEWAY_NETEX_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data_dir.join("netex/trenitalia-fl.netex.xml.gz"));
+
+    // Resolve the region like the gateway and pipeline do, so the worker's jobs
+    // and their source URLs come from one source of truth (ADR 0008 / 0019).
+    let regions_dir = PathBuf::from(config::or("REGIONS_DIR", "regions"));
+    let target = config::or("ITER_REGION", "italy/lazio/rome");
+    let region = iter_region::resolve(&regions_dir, &target)
+        .with_context(|| format!("resolving region '{target}'"))?;
 
     let http = reqwest::Client::builder()
         .user_agent(concat!("iter-worker/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
 
-    let jobs: Vec<Box<dyn Job>> = vec![
-        Box::new(jobs::fl_gtfs::FlGtfsBuild {
-            netex_path,
-            // The FL GTFS lands next to the other graph inputs (steps/gtfs.rs
-            // skips netex feeds, leaving this slot for the worker).
-            out_path: data_dir.join("graph/TRENITALIA-FL.gtfs.zip"),
-            // The FL NeTEx auto-downloads from the Italian NAP (CCISS) public
-            // endpoint — RAP Lazio L2 (the L1 superset). Override or set empty
-            // (NETEX_URL=) to use a file placed at GATEWAY_NETEX_PATH instead.
-            netex_url: Some(config::or(
-                "NETEX_URL",
-                "https://www.cciss.it/nap/mmtis/public/api/v1/download/blob/Asset/663391/checkedResource",
-            ))
-            .filter(|u| !u.is_empty()),
-            // The FL feed is the Italian NeTEx-IT profile (ADR 0017).
-            netex_profile: iter_region_drivers::DEFAULT_NETEX_PROFILE.to_string(),
-            http: http.clone(),
-        }),
-        Box::new(jobs::rt_reliability::RtReliability::from_env(http)),
-    ];
+    let jobs = jobs::from_region(&region, &data_dir, &http);
 
-    tracing::info!(jobs = jobs.len(), "iter-worker starting");
+    tracing::info!(jobs = jobs.len(), region = %target, "iter-worker starting");
     scheduler::run(jobs).await
 }
