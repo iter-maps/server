@@ -1,4 +1,4 @@
-//! Place enrichment (ADR 0011, concept doc 20). Keyless fusion of open sources
+//! Place enrichment (ADR 0011): keyless fusion of open sources
 //! into the normalized [`Place`]: Wikipedia REST summary (description, prose,
 //! thumbnail, and the Wikidata QID for free), Wikidata for the structured image
 //! (`P18`), and Wikimedia Commons for a proxiable thumbnail + its license/author.
@@ -62,9 +62,9 @@ pub struct ImageParams {
     pub width: Option<u32>,
 }
 
-/// `GET /places/image` — proxy a Wikimedia Commons file through the BFF (the
-/// open-layer image rule, concept 20 §5.1). We build the upstream URL from the
-/// file name, so there is no open redirect / SSRF surface.
+/// `GET /places/image` — proxy a Wikimedia Commons file through the BFF. We
+/// build the upstream URL from the file name, so there is no open redirect /
+/// SSRF surface.
 pub async fn image(
     State(state): State<AppState>,
     Query(params): Query<ImageParams>,

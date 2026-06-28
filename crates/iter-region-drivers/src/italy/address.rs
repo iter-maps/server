@@ -1,14 +1,12 @@
 //! Italian address normalization — the join key for correlating places at the
-//! same civico (ADR 0012). This is the Italy driver behind the generic
-//! [`AddressNormalizer`] trait (ADR 0017/0018): no open geocoder ships "what's at
-//! this address", so we build the index ourselves, and
-//! the bucket key must survive the ways Italian addresses vary: street-type
-//! abbreviations (`V.le` = `Viale`), accents, esponenti (`12/A` = `12a`,
-//! `12 bis`), the `snc` ("no number") sentinel, and the Firenze/Genova
-//! red-vs-black civici — where `Via X 1` and `Via X 1 rosso` are *different*
-//! buildings, so the colour must be part of the key.
+//! same civico, behind the generic [`AddressNormalizer`] trait. The key must
+//! survive the ways Italian addresses vary: street-type abbreviations
+//! (`V.le` = `Viale`), accents, esponenti (`12/A` = `12a`, `12 bis`), the `snc`
+//! ("no number") sentinel, and the Firenze/Genova red-vs-black civici — where
+//! `Via X 1` and `Via X 1 rosso` are *different* buildings, so the colour must
+//! be part of the key.
 //!
-//! libpostal would be the heavyweight alternative (a ~1.8 GB model); for Italian
+//! libpostal would be the heavyweight alternative (~1.8 GB model); for Italian
 //! streets a focused rule layer is enough and ships in-binary.
 
 use crate::traits::AddressNormalizer;

@@ -1,8 +1,8 @@
-//! The four region-driver selectors (ADR 0018). Each maps a primitive (country,
-//! city, profile id) to an `Arc<dyn …>` driver, dispatching the known regions to
-//! their `italy::…` impls and everything else to the generic/stub/`None`
-//! fallbacks. The tiers resolve the region (`iter-region`) and call these with
-//! primitives; the registry never sees `region.toml`.
+//! The four region-driver selectors. Each maps a primitive (country, city,
+//! profile id) to an `Arc<dyn …>` driver, dispatching known regions to their
+//! `italy::…` impls and everything else to the generic/stub/`None` fallbacks.
+//! Tiers resolve the region and call these with primitives, so the registry
+//! never sees `region.toml`.
 
 use std::sync::Arc;
 
@@ -21,12 +21,10 @@ pub fn address_normalizer(country: &str) -> Arc<dyn AddressNormalizer> {
     }
 }
 
-/// Select the live-trains provider for a region's country. The optional
-/// `base_url`/`region_code` are passed to the chosen driver (the upstream
-/// endpoint override and the default station-list region); each driver owns its
-/// own fallbacks for them. Unknown countries get a stub that returns empty
-/// results — the surface stays wired but inert, exactly like
-/// [`GenericNormalizer`] for address correlation.
+/// Select the live-trains provider for a region's country. `base_url` overrides
+/// the upstream endpoint and `region_code` sets the default station-list region;
+/// each driver owns its own fallbacks. Unknown countries get a stub returning
+/// empty results — the surface stays wired but inert.
 pub fn live_trains_provider(
     country: &str,
     base_url: Option<String>,

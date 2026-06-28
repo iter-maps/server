@@ -1,19 +1,10 @@
 //! Italy live-trains driver: a client over RFI's unofficial ViaggiaTreno API,
-//! behind the generic [`LiveTrainsProvider`] trait (ADR 0017/0018). Everything
-//! Italy/RFI-specific lives here — the `cercaStazione`/`elencoStazioni`/
-//! `partenze`/`arrivi` endpoint segments, the Italian JSON field names, the
-//! `S\d+` station-id format, the `Date.toString()` CET/CEST date param, and the
-//! viaggiatreno.it base URL + referer. The generic core only knows the trait.
-//!
-//! Errors are the neutral [`anyhow::Error`] (ADR 0018): a bad station id, an
-//! unreachable upstream, and a malformed payload all surface as `anyhow`; the
-//! gateway's live-trains handler maps them into its `ApiError`.
-//!
-//! Verified end-to-end against the live API (2026-06-28): the upstream field
-//! names below and the `Date.toString()` date-param are confirmed — station
-//! search, the regional station list (with lat/lon), and the arrivals/departures
-//! boards all return correctly-normalized real data. Validation, normalization,
-//! and the date-param are also unit-tested here.
+//! behind the generic [`LiveTrainsProvider`] trait. Everything Italy/RFI-specific
+//! lives here — the `cercaStazione`/`elencoStazioni`/`partenze`/`arrivi` endpoint
+//! segments, the Italian JSON field names, the `S\d+` station-id format, the
+//! `Date.toString()` CET/CEST date param, and the viaggiatreno.it base URL +
+//! referer. Field names and the date-param were verified against the live API
+//! (2026-06-28).
 
 use anyhow::{Context, anyhow};
 use iter_contracts::live_trains::{BoardEntry, Station};

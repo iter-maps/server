@@ -1,7 +1,7 @@
 //! Basemap tiles via planetiler — renders the OSM PBF into a clustered PMTiles
 //! v3 archive (OMT schema, z0-14) over the region's basemap extent. planetiler
 //! lives in the data-prep image; we shell out to it. Skip-if-present;
-//! `FORCE_TILES` rebuilds. Verified end-to-end on real planetiler output.
+//! `FORCE_TILES` rebuilds.
 
 use std::path::Path;
 

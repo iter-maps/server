@@ -1,6 +1,5 @@
-//! Orchestration probes. Liveness is process-up; readiness gates traffic on
-//! the artifact tree being present, and grows more checks (upstream
-//! reachability, per-capability artifacts) as capabilities land.
+//! Orchestration probes. Liveness is process-up; readiness gates traffic on the
+//! artifact tree being present.
 
 use axum::Json;
 use axum::extract::State;

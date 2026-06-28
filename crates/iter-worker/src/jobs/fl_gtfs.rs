@@ -20,8 +20,7 @@ pub struct FlGtfsBuild {
     pub out_path: PathBuf,
     pub netex_url: Option<String>,
     /// NeTEx profile id selecting the country driver (ADR 0017); the FL feed is
-    /// the Italian NeTEx-IT default (`it-iti4`). Moving this into region.toml
-    /// feeds is a separate future step.
+    /// the Italian NeTEx-IT default (`it-iti4`).
     pub netex_profile: String,
     pub http: reqwest::Client,
 }
@@ -112,8 +111,7 @@ async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::R
 }
 
 /// Decompress (if `.gz`), parse the NeTEx, and write the GTFS zip atomically.
-/// The NeTEx profile id selects the country driver (ADR 0017) for id stripping
-/// and the synthesized agency.
+/// The profile id selects the country driver for id stripping and the agency.
 fn convert_file(netex: &Path, out: &Path, profile_id: &str) -> anyhow::Result<netex::Stats> {
     let profile = iter_region_drivers::netex_profile(profile_id);
     let file = std::fs::File::open(netex)?;

@@ -1,9 +1,7 @@
-//! Italian NeTEx-IT (`IT:ITI4`) profile for Trenitalia-FL (concept doc 11, ADR
-//! 0004, ADR 0017/0018). This is the Italy driver behind the generic
-//! [`crate::traits::NetexProfile`] trait: the `IT:ITI4` id
-//! codespace scheme and the FL/`Europe/Rome`/`it` agency Trenitalia's NeTEx
-//! carries no GTFS agency for. The streaming parser and GTFS structure stay
-//! generic in the worker's `netex.rs`.
+//! Italian NeTEx-IT (`IT:ITI4`) profile for Trenitalia-FL, behind the generic
+//! [`crate::traits::NetexProfile`] trait: the `IT:ITI4` id codespace scheme and
+//! the FL/`Europe/Rome`/`it` agency that Trenitalia's NeTEx carries no GTFS
+//! agency for.
 
 use crate::traits::{AgencyInfo, NetexProfile};
 
@@ -26,10 +24,8 @@ impl NetexProfile for ItalyNetex {
     }
 }
 
-/// NeTEx id → a clean GTFS local id: the part after the `IT:ITI4:<Type>:` prefix
+/// NeTEx id → clean GTFS local id: the part after the `IT:ITI4:<Type>:` prefix
 /// (`IT:ITI4:ScheduledStopPoint:830008328_pass_0083` → `830008328_pass_0083`).
-/// Other countries' NeTEx use a different prefix shape — this is the Italian
-/// NeTEx-IT id scheme.
 fn gid(s: &str) -> String {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() > 3 {

@@ -43,7 +43,7 @@ impl Step for ClipOsm {
         let dir = ctx.graph_dir();
         tokio::fs::create_dir_all(&dir).await?;
         // osmium infers the format from the output extension, so the temp file
-        // keeps `.osm.pbf`; rename into place on success (atomic, P6).
+        // keeps `.osm.pbf`; rename into place on success.
         let tmp = dir.join("clip-building.osm.pbf");
         let out = dir.join(ctx.clipped_osm_filename());
 

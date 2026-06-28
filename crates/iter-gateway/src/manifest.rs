@@ -1,6 +1,6 @@
 //! Freshness manifest (`GET /manifest`): per-artifact `{updatedAt, etag}` so a
 //! cache-first client checks staleness in one request instead of revalidating
-//! every surface (concept doc 18 §4 — server→client artifact sync).
+//! every surface.
 
 use std::path::Path;
 
@@ -12,8 +12,7 @@ use iter_contracts::health::{ArtifactFreshness, FreshnessManifest};
 
 use crate::state::AppState;
 
-/// Contract version the client compares against. Bumped on a breaking wire
-/// change.
+/// Contract version the client compares against; bumped on a breaking wire change.
 pub const API_VERSION: &str = "1";
 
 pub async fn manifest(State(state): State<AppState>) -> impl IntoResponse {

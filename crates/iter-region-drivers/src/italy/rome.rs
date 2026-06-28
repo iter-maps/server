@@ -1,20 +1,16 @@
 //! Rome / ATAC transit-overlay driver — the operator/network specifics behind the
-//! generic [`TransitOverlayDriver`] trait (ADR 0017/0018). The overlay *geometry*
-//! (the osmpbf harvest, way-union, concave-hull concourse, platform offset math,
-//! GeoJSON emission) is generic and lives in the pipeline's `steps/overlay.rs`;
-//! what's specific to Rome's metro/tram network lives here:
+//! generic [`TransitOverlayDriver`] trait. The overlay geometry (osmpbf harvest,
+//! way-union, concave-hull concourse, platform offset math, GeoJSON emission) is
+//! generic; what's specific to Rome's metro/tram network lives here:
 //!
 //! - the `ATAC` operator filter and the `A|B|C` metro line allow-set;
 //! - the contract colours (A orange, B/B1 blue, C green);
-//! - the B1 branch split (a line-B direction that serves Jonio / Conca d'Oro is
-//!   the B1 spur);
+//! - the B1 branch split (a line-B direction serving Jonio / Conca d'Oro is the
+//!   B1 spur);
 //! - the GTFS conventions (metro short-names `ME{line}`, the `ATAC:` route-id
 //!   prefix, the `ATAC.gtfs.zip` feed filename);
 //! - the central-Rome projection origin (`12.5, 41.9`; the longitude scale is
 //!   `cos(41.9°) · 111_320 ≈ 82_800` m/deg).
-//!
-//! Moving these to `region.toml` data is a separate future step (ADR 0017 tier
-//! 1); this driver only *isolates* them out of the generic core.
 
 use crate::traits::{LineKind, Projection, TransitOverlayDriver};
 

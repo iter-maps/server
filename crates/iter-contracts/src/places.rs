@@ -1,11 +1,10 @@
-//! Place enrichment & discovery DTOs (concept doc 20). The enrichment layer
-//! lives in the gateway/BFF *above* geocoding: it fuses open sources (OSM
-//! facets, Wikidata, Wikipedia, Wikimedia Commons, Overture Places) into one
-//! normalized [`Place`], every displayed field carrying its source + license in
-//! `provenance`, plus the [`Related`] places that share its street address and
-//! house number. Geocoding's own GeoJSON shape (the client greps Photon
-//! `properties`) is unchanged — this is a separate surface the client calls for
-//! a tapped result.
+//! Place enrichment & discovery DTOs. The enrichment layer lives in the
+//! gateway/BFF *above* geocoding: it fuses open sources (OSM facets, Wikidata,
+//! Wikipedia, Wikimedia Commons, Overture Places) into one normalized
+//! [`Place`], every displayed field carrying its source + license in
+//! `provenance`, plus the [`Related`] places sharing its address. This is a
+//! separate surface the client calls for a tapped result; geocoding's own
+//! GeoJSON shape is unchanged.
 
 use std::collections::BTreeMap;
 
@@ -45,8 +44,8 @@ pub struct Place {
     #[serde(default, skip_serializing_if = "Facets::is_empty")]
     pub facets: Facets,
     /// Places correlated to this one — chiefly those at the same address +
-    /// civico (the restaurant at the searched number). Concept 20 §2.2 records
-    /// correlations; it deliberately does NOT dedup them away. Empty when none.
+    /// civico (the restaurant at the searched number). Correlations are
+    /// recorded, not deduped away. Empty when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<Related>,
     /// Per-field source + license so attribution is mechanically satisfiable
@@ -55,8 +54,8 @@ pub struct Place {
     pub provenance: Vec<Provenance>,
 }
 
-/// The owned, stable category taxonomy plus the raw source tags (concept 20
-/// §3.1) — `primary` survives source changes; `tags` keep the long tail.
+/// Owned, stable category taxonomy plus the raw source tags: `primary`
+/// survives source changes; `tags` keep the long tail.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Category {
     pub primary: String,
@@ -65,9 +64,8 @@ pub struct Category {
 }
 
 /// A displayable image with the attribution its license requires. `proxied`
-/// encodes the one BFF exception (concept 20 §5): open-layer images (Commons)
-/// are served through the gateway (`true`); a commercial source whose ToS
-/// forbids proxying would be `false` (client fetches it directly).
+/// is `true` for open-layer images (Commons) served through the gateway;
+/// `false` for sources whose ToS forbids proxying (client fetches directly).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Image {
@@ -95,8 +93,8 @@ pub struct Address {
     pub city: Option<String>,
 }
 
-/// Open-data facets straight from OSM tags (concept 20 §3.5) — the keyless
-/// filter set. All optional; absent fields are omitted from the wire.
+/// Open-data facets straight from OSM tags — the keyless filter set. All
+/// optional; absent fields are omitted from the wire.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Facets {

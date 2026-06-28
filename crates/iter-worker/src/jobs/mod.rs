@@ -1,8 +1,8 @@
 //! Background jobs, derived from the resolved region's feeds (ADR 0019).
 //!
-//! `fl_gtfs` (FL NeTEx→GTFS) and `rt_reliability` (GTFS-RT ingestion) are wired.
-//! The reliability rollup tier (persistent Tier-0/1/2 archives) and the daily
-//! graph-refresh trigger land next — see `docs/roadmap/`.
+//! `fl_gtfs` (FL NeTEx→GTFS) and `rt_reliability` (GTFS-RT ingestion) are wired;
+//! the reliability rollup tier and daily graph-refresh trigger are tracked in
+//! `docs/roadmap/`.
 
 pub mod fl_gtfs;
 pub mod rt_reliability;
@@ -27,8 +27,8 @@ pub fn from_region(
 
     for feed in region.enabled_feeds() {
         if feed.source.as_deref() == Some("netex") {
-            // The FL NeTEx lands here, gets converted, and the GTFS lands next to
-            // the other graph inputs (steps/gtfs.rs skips netex feeds).
+            // GTFS lands next to the other graph inputs; steps/gtfs.rs skips
+            // netex feeds so they don't collide here.
             let netex_path = config::opt("GATEWAY_NETEX_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| {

@@ -1,8 +1,8 @@
 //! Offline map pre-download. `/offline/extract` range-reads the clustered
 //! basemap PMTiles into a bbox-clipped archive (no tile re-render) via the
-//! pinned `go-pmtiles` CLI (concept ADR 0010). Because the surface is public
-//! and auth-less, the validation caps below — bbox sanity, a maximum area, a
-//! zoom clamp, and a concurrency gate — are the only abuse protection.
+//! pinned `go-pmtiles` CLI. The surface is public and auth-less, so the
+//! validation caps below — bbox sanity, a maximum area, a zoom clamp, and a
+//! concurrency gate — are the only abuse protection.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

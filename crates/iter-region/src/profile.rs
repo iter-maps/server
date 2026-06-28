@@ -78,14 +78,13 @@ pub struct Feed {
     pub realtime: Vec<RealtimeChannel>,
 }
 
-/// One GTFS-RT channel a feed publishes (`trip-updates`, `vehicle-positions`,
-/// `service-alerts`) and the URL it streams from.
+/// A GTFS-RT channel: `trip-updates`, `vehicle-positions`, or
+/// `service-alerts`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RealtimeChannel {
     pub channel: String,
-    /// The `.pb` feed URL. Absent for a channel that's declared but not yet
-    /// consumed.
+    /// The `.pb` feed URL. Absent for a declared-but-not-yet-consumed channel.
     #[serde(default)]
     pub url: Option<String>,
 }

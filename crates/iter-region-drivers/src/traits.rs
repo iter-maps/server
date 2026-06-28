@@ -1,10 +1,9 @@
 //! The four region-driver traits and their value types, decoupled from any tier
-//! crate (ADR 0018). The neutral provider error is `anyhow::Error`: the
-//! [`LiveTrainsProvider`] methods return `anyhow` results so the trait stops
-//! referencing tier types like the gateway's `ApiError` — the gateway's
-//! live-trains handler maps `anyhow` into its `ApiError`. The generic fallbacks
-//! ([`GenericNormalizer`], [`NoLiveTrains`]) and the shared
-//! `default_split_freeform` live here too.
+//! crate (ADR 0018). Provider errors are the neutral `anyhow::Error` so the
+//! traits never reference tier types like the gateway's `ApiError`; each tier
+//! maps `anyhow` into its own error. The generic fallbacks
+//! ([`GenericNormalizer`], [`NoLiveTrains`]) and `default_split_freeform` live
+//! here too.
 
 use iter_contracts::live_trains::{BoardEntry, Station};
 
@@ -19,16 +18,11 @@ pub enum BoardKind {
     Arrivals,
 }
 
-/// Country-specific live-train provider (ADR 0017/0018): the upstream API's
-/// endpoint shapes, field names, station-id format and date param are all
-/// country/operator specific, so the generic handlers dispatch through this trait
-/// to the driver for the deployment's country. The TTL cache + single-flight +
-/// axum handlers stay generic in the gateway; only the upstream client lives in
-/// the driver.
-///
-/// The driver owns its own upstream base URL and any region fallback — those
-/// literals never leak into the generic config or handlers. Errors are the
-/// neutral [`anyhow::Error`]; the gateway handler maps them into its `ApiError`.
+/// Country-specific live-train provider: endpoint shapes, field names, station-id
+/// format and date param are all country/operator specific, so the generic
+/// gateway handlers dispatch through this trait to the deployment's driver. The
+/// driver owns its own upstream base URL and region fallback so those literals
+/// never leak into the generic config.
 #[async_trait::async_trait]
 pub trait LiveTrainsProvider: Send + Sync {
     /// Autocomplete stations by free-text `query`. Drivers validate `query`
@@ -94,8 +88,8 @@ impl LiveTrainsProvider for NoLiveTrains {
 // ---------------------------------------------------------------------------
 
 /// Country-specific address normalization for the place-correlation bucket key
-/// (street-type expansion, house-number/esponente rules, …). The bucket key is
-/// the join: two records share an address iff their keys match (ADR 0012).
+/// (street-type expansion, house-number/esponente rules, …). Two records share
+/// an address iff their bucket keys match.
 pub trait AddressNormalizer: Send + Sync {
     /// The correlation bucket for `(street, housenumber, city)`.
     fn bucket_key(&self, street: &str, housenumber: &str, city: &str) -> String;
@@ -179,11 +173,10 @@ pub struct Projection {
 }
 
 /// The operator/network rules the generic transit-overlay algorithm dispatches
-/// through (ADR 0017). The geometry (way-union, hulls, platform offsets, GeoJSON
-/// emission) is generic; everything an operator decides — which operator's
-/// relations to keep, which refs are metro lines, their contract colours, branch
-/// splits, the gtfs lookup keys, the route-id prefix, the feed filename, and the
-/// projection origin — lives behind this trait.
+/// through. The geometry (way-union, hulls, platform offsets, GeoJSON emission)
+/// is generic; everything an operator decides — which relations to keep, which
+/// refs are metro lines, their colours, branch splits, the gtfs lookup keys, the
+/// route-id prefix, the feed filename, and the projection origin — lives here.
 pub trait TransitOverlayDriver: Send + Sync {
     /// The OSM `operator` tag value whose route relations this network owns.
     fn operator(&self) -> &str;

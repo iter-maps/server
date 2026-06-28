@@ -1,16 +1,14 @@
-//! Address correlation (ADR 0012, concept doc 20 §2.2). Given an address the
-//! user searched (a civico), surface the places at it — the restaurant at
-//! "Via Cavour 1" — as `related[]`. This deliberately does NOT dedup the way
-//! geocoders do (Pelias collapses the venue and its address; Nominatim/Photon
-//! never link a POI to its house number): we *attach*.
+//! Address correlation (ADR 0012). Given an address the user searched (a
+//! civico), surface the places at it — the restaurant at "Via Cavour 1" — as
+//! `related[]`. This deliberately does NOT dedup the way geocoders do (Pelias
+//! collapses the venue and its address; Nominatim/Photon never link a POI to its
+//! house number): we *attach*.
 //!
-//! Backed by a build-time `places.jsonl` (the PLACES pipeline step extracts
-//! addressed POIs from Overture). The gateway loads it once into an in-memory
-//! bucket index keyed by the normalized address (via the region's
-//! [`AddressNormalizer`] driver) and by brand
-//! QID, so a replica answers from memory — the stateless + regenerable artifact
-//! model. The index is region-generic; the country-specific bucketing comes from
-//! the injected normalizer (ADR 0017).
+//! Backed by a build-time `places.jsonl` of addressed POIs. The gateway loads it
+//! once into an in-memory bucket index keyed by the normalized address (via the
+//! region's [`AddressNormalizer`] driver) and by brand QID, so a replica answers
+//! from memory. The index is region-generic; the country-specific bucketing comes
+//! from the injected normalizer (ADR 0017).
 
 use std::collections::HashMap;
 use std::path::Path;

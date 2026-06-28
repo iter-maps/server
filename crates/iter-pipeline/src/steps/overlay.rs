@@ -9,17 +9,16 @@
 //! selected from the resolved region (ADR 0017). A region with no driver logs
 //! and skips.
 //!
-//! `transit-lines` (concept doc 09 §3): for every driver-owned `route=subway|tram`
-//! relation, union the track-way members across all direction/variant relations
-//! of a line (shared track deduped by way id), emit one `MultiLineString` feature
-//! per line with the GTFS route id + colour.
+//! `transit-lines`: for every driver-owned `route=subway|tram` relation, union
+//! the track-way members across all direction/variant relations of a line
+//! (shared track deduped by way id), emit one `MultiLineString` feature per line
+//! with the GTFS route id + colour.
 //!
-//! `metro-stations` (concept doc 09 §2): per metro station, emit a `concourse`
-//! (concave hull of the station's stop/platform/exit points), one `platform`
-//! per direction-stop (a side strip offset along the real track), and an `exit`
-//! per `subway_entrance`. Geometry is computed in local-planar metres (`geo`
-//! concave hull, manual perpendicular offset — no shapely); the morphological
-//! smoothing and corridor union of the reference impl are simplified here.
+//! `metro-stations`: per metro station, emit a `concourse` (concave hull of the
+//! station's stop/platform/exit points), one `platform` per direction-stop (a
+//! side strip offset along the real track), and an `exit` per `subway_entrance`.
+//! Geometry is computed in local-planar metres (`geo` concave hull, manual
+//! perpendicular offset).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -372,7 +371,7 @@ fn round7(v: f64) -> f64 {
     (v * 1e7).round() / 1e7
 }
 
-// ─── metro-stations (concept doc 09 §2) ──────────────────────────────────────
+// ─── metro-stations ──────────────────────────────────────────────────────────
 
 // Metres per degree latitude — constant everywhere; the longitude scale and the
 // projection origin are region-specific and come from the driver.

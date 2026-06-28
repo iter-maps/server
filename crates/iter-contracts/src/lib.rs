@@ -1,7 +1,6 @@
 //! The Iter Maps wire contract as Rust types. Field names and JSON shapes here
 //! are load-bearing: the Android client greps literal tokens and renders by
-//! them, so changing a name breaks the client. Keep these verbatim with the
-//! contract under `concept/02-api-contracts/`.
+//! them, so changing a name breaks the client.
 
 pub mod geo;
 pub mod health;

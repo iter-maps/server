@@ -1,10 +1,8 @@
-//! GTFS-RT ingestion — the live-data foundation for historical reliability
-//! (concept docs 10, 23). Polls ATAC's `trip-updates` feed, decodes it, and
-//! derives one delay event per stop, keyed on the STABLE tuple
+//! GTFS-RT ingestion for historical reliability. Polls a `trip-updates` feed,
+//! decodes it, and derives one delay event per stop, keyed on the stable tuple
 //! (route, direction, stop, service-date) — never the raw `trip_id`, which Rome
-//! renumbers near-daily. Garbage is dropped (|delay| over 2 h). This slice
-//! ingests + summarizes; the persistent rollup tier (Tier-0/1/2 archives) is the
-//! next step and carries its own ADR (it is the scoped exception to P7-stateless).
+//! renumbers near-daily. Garbage is dropped (|delay| over 2 h). For now this
+//! only ingests and summarizes; the persistent rollup tier lands next.
 
 use std::time::Duration;
 
@@ -16,7 +14,7 @@ use crate::gtfs_rt::FeedMessage;
 use crate::job::Job;
 
 /// Drop |delay| beyond this (seconds) — incoherent feed rows would poison a
-/// percentile (concept 23 §2.1).
+/// percentile.
 const MAX_ABS_DELAY_S: i32 = 2 * 60 * 60;
 
 pub struct RtReliability {

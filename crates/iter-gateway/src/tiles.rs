@@ -12,8 +12,8 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::state::AppState;
 
 pub fn router(state: &AppState) -> Router<AppState> {
-    // ServeDir does no compression by default (gzip OFF, as required) and
-    // does not fall back to precompressed siblings unless explicitly enabled.
+    // ServeDir does no compression and won't serve precompressed siblings
+    // unless told to — so the gzip-OFF requirement holds.
     let serve = ServeDir::new(&state.cfg.tiles_dir).append_index_html_on_directories(false);
 
     Router::new()

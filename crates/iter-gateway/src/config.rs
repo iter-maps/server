@@ -6,7 +6,6 @@ use iter_contracts::offline;
 use iter_core::config;
 
 /// Gateway configuration, entirely env-derived (`.env` for "clone + up").
-/// Fields are added as the capabilities that consume them land.
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
     pub bind: SocketAddr,
@@ -49,7 +48,7 @@ pub struct GatewayConfig {
     pub places_path: PathBuf,
     /// The clustered PMTiles archive offline range-extracts read from.
     pub offline_source: PathBuf,
-    /// `go-pmtiles` binary used for the range-extract (concept ADR 0010).
+    /// `go-pmtiles` binary used for the range-extract.
     pub pmtiles_bin: String,
 }
 

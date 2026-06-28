@@ -1,7 +1,7 @@
 //! The step runner. Per step: skip if `SKIP_<name>`; otherwise run when forced
 //! or when its output is absent, else skip as already-satisfied. Failures abort
-//! the whole pipeline loudly (strict error propagation, P6) — a half-built
-//! pipeline must never exit 0 and look healthy.
+//! the whole pipeline loudly — a half-built pipeline must never exit 0 and look
+//! healthy.
 
 use crate::context::Context;
 use crate::step::Step;

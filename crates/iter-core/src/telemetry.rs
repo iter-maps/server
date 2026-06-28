@@ -1,6 +1,5 @@
-//! Operator-local observability only: structured logs to stdout. This never
-//! phones home (telemetry policy concern (b): operator observability stays
-//! local). `ITER_LOG` sets the filter, `ITER_LOG_FORMAT=json` switches to JSON.
+//! Operator-local observability: structured logs to stdout, never phoning
+//! home. `ITER_LOG` sets the filter, `ITER_LOG_FORMAT=json` switches to JSON.
 
 use tracing_subscriber::EnvFilter;
 

@@ -1,6 +1,6 @@
 //! Iter Maps edge / BFF library: the router and its capability modules. The
-//! binary (`main.rs`) is a thin wrapper over `router::build`, so the full
-//! router is integration-testable via `tower`'s `oneshot`.
+//! binary (`main.rs`) is a thin wrapper over `router::build` so the router stays
+//! integration-testable via `tower`'s `oneshot`.
 
 pub mod cache;
 pub mod config;

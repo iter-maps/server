@@ -1,16 +1,13 @@
-//! Generic NeTEx → GTFS conversion (concept doc 11, ADR 0004, ADR 0017). The
-//! parser, the NeTEx element vocabulary, and the GTFS structure here are
-//! EU-standard, reusable for any country's NeTEx. The country-specific bits — the
-//! id codespace scheme and the synthesized agency — are dispatched through the
-//! [`iter_region_drivers::NetexProfile`] trait to a per-country driver (the
-//! default is the Italian NeTEx-IT / Trenitalia-FL profile). First proven
-//! against the real Lazio dataset (`IT-ITI4-0083`, 5 lines / 450 stops / ~1600
-//! journeys).
+//! Generic NeTEx → GTFS conversion (ADR 0017). The parser and the GTFS structure
+//! are EU-standard and reusable for any country's NeTEx; the country-specific
+//! bits — the id codespace scheme and the synthesized agency — go through the
+//! [`iter_region_drivers::NetexProfile`] trait to a per-country driver (default:
+//! Italian NeTEx-IT / Trenitalia-FL).
 //!
-//! The NeTEx is a single ~58 MB document, so we stream it with a pull parser and
+//! The document is a single ~58 MB file, so we stream it with a pull parser and
 //! resolve: `Line` → route, `ScheduledStopPoint` (with its `Location`) → stop,
 //! `ServiceJourneyPattern` → the ordered stop sequence, `ServiceJourney` +
-//! `passingTimes` → trip + stop_times (the passing times reference a
+//! `passingTimes` → trip + stop_times (passing times reference a
 //! `StopPointInJourneyPattern`, resolved back to its stop), and `DayType`
 //! days-of-week + the journeys' `ValidBetween` → the calendar.
 
@@ -70,7 +67,7 @@ pub struct Stats {
 }
 
 /// Stream-parse a NeTEx document into the intermediate model. Ids are stripped
-/// through the supplied profile's codespace scheme (ADR 0017).
+/// through the supplied profile's codespace scheme.
 pub fn parse<R: BufRead>(r: R, profile: &dyn NetexProfile) -> anyhow::Result<Netex> {
     let mut reader = Reader::from_reader(r);
     let mut buf = Vec::new();

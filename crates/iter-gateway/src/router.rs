@@ -9,9 +9,7 @@ use crate::{
     styles, tiles,
 };
 
-/// Assemble the gateway router. Capability modules (tiles, styles, overlays,
-/// offline, live-trains, routing/geocoding proxy, client health) attach their
-/// sub-routers here as they land.
+/// Assemble the gateway router from the capability modules' routes.
 pub fn build(state: AppState) -> Router {
     Router::new()
         .route("/livez", get(health::livez))

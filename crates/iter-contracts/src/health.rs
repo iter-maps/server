@@ -1,7 +1,7 @@
 //! Health and freshness documents. The static `health.json` has five exact
 //! fields the client reads to show an "update app" banner; the gateway health
 //! is operator diagnostics; the freshness manifest drives server→client
-//! artifact sync (concept 18 §4).
+//! artifact sync.
 
 use iter_core::Status;
 use serde::Serialize;
