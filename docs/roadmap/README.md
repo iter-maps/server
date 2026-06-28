@@ -4,6 +4,12 @@ An honest map of everything **not yet built**, each item pointed at its design
 source so there are no silent gaps. Three groups: external-engine integration,
 remaining Rust capabilities, and planned forward-looking features.
 
+> **Cross-cutting:** [`region-decoupling.md`](region-decoupling.md) tracks moving
+> the Italy/Rome specifics out of the generic core (ADR 0017) — config-drivable
+> params into `region.toml`, custom code into `regions::<country>` drivers. The
+> first driver (the Italian address normalizer) has landed; that file is the
+> classified worklist for the rest.
+
 The architecture this plugs into is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md):
 a stateless **gateway** (edge/BFF) fronting OTP + Photon, an idempotent
 **pipeline** (build tier), and an **iter-worker** (background jobs). "Design" /
