@@ -80,7 +80,9 @@ services:
         condition: service_completed_successfully
     # The stock image's entrypoint hardcodes /var/opentripplanner as the graph
     # directory; we reuse its jib invocation but point OTP at the pipeline's
-    # /data/graph instead, then load + serve it.
+    # /data/graph instead, then load + serve it. OTP reads both build-config.json
+    # and router-config.json from that dir, so serving picks up the pipeline's
+    # GTFS-RT updaters (router-config.json) for live routing with no extra flag.
     entrypoint: ["/bin/bash", "-lc"]
     command:
       - 'exec java $JAVA_OPTS -cp @/app/jib-classpath-file @/app/jib-main-class-file /data/graph --load --serve'

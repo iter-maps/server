@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
         Box::new(steps::gtfs::FetchGtfs),
         Box::new(steps::build_config::WriteBuildConfig),
         Box::new(steps::graph::BuildGraph),
+        Box::new(steps::router_config::WriteRouterConfig),
         Box::new(steps::overlay::BuildOverlays),
         Box::new(steps::civici::ExtractCivici),
         Box::new(steps::photon::BuildPhotonIndex),

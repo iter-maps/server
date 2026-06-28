@@ -26,13 +26,16 @@ flagged per item.
 
 - **OTP graph build** ✅ done (ADR 0009) **· GTFS-RT + daily fresh graph** 🚧 —
   the static graph is built and served: CLIP (osmium) → GTFS fetch →
-  BUILD_CONFIG → GRAPH (OTP `--build --save`) → OTP serves `POST /otp/gtfs/v1`
-  (proven with a real Rome `plan`). **Remaining:** the 3 ATAC GTFS-RT updaters
-  (trip-updates/vehicle-positions @30 s, alerts @60 s) with `fuzzyTripMatching`,
-  and the **daily** static-graph rebuild (mandatory for calendar sparsity +
-  trip-id churn) with a keep-old-in-RAM ~30–60 s swap.
+  BUILD_CONFIG → GRAPH (OTP `--build --save`) → ROUTER_CONFIG (GTFS-RT updaters)
+  → OTP serves `POST /otp/gtfs/v1` (proven with a real Rome `plan`). The GTFS-RT
+  updaters are wired (ADR 0020): a ROUTER_CONFIG step writes `router-config.json`
+  from the region's realtime channels (trip-updates/vehicle-positions @30 s,
+  alerts @60 s, `fuzzyTripMatching` on trip-updates), one updater per channel
+  with a url — today the ATAC `trip-updates` stream. **Remaining:** the **daily**
+  static-graph rebuild (mandatory for calendar sparsity + trip-id churn) with a
+  keep-old-in-RAM ~30–60 s swap.
   Design: concept doc 05 — routing-engine, doc 10 — realtime-transit ·
-  Decision: ADR 0009.
+  Decision: ADR 0009, 0020.
 - **Photon import + civici** ✅ done (ADR 0010) — the Photon index is built from
   the raw Italy dump (`photon.jar import`, embedded OpenSearch) enriched with
   Italian civici extracted via DuckDB from Overture addresses (bbox filter, dedup

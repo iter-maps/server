@@ -64,3 +64,4 @@ a typo) do not need one.
 - [0017](0017-region-drivers-config-and-code.md) — Region specifics: config-driven where possible, drivers where code is needed
 - [0018](0018-region-drivers-in-one-crate.md) — Region drivers live in one `iter-region-drivers` crate
 - [0019](0019-worker-resolves-region-feed-urls.md) — The worker resolves its region; feeds carry their source URLs
+- [0020](0020-otp-consumes-region-gtfs-rt-for-live-routing.md) — OTP consumes region GTFS-RT for live routing
