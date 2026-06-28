@@ -3,10 +3,16 @@
 //! (`region.overlays`): each declared kind is built if implemented.
 //! Skip-if-present; `FORCE_OVERLAY`.
 //!
-//! `transit-lines` (concept doc 09 §3): for every `route=subway|tram` relation
-//! operated by ATAC, union the track-way members across all direction/variant
-//! relations of a line (shared track deduped by way id), emit one
-//! `MultiLineString` feature per line with the GTFS route id + colour.
+//! The *geometry* here is generic; the operator/network specifics (which
+//! operator, which refs are metro lines, their colours, branch splits, GTFS
+//! conventions, projection origin) live behind a [`TransitOverlayDriver`]
+//! selected from the resolved region (ADR 0017). A region with no driver logs
+//! and skips.
+//!
+//! `transit-lines` (concept doc 09 §3): for every driver-owned `route=subway|tram`
+//! relation, union the track-way members across all direction/variant relations
+//! of a line (shared track deduped by way id), emit one `MultiLineString` feature
+//! per line with the GTFS route id + colour.
 //!
 //! `metro-stations` (concept doc 09 §2): per metro station, emit a `concourse`
 //! (concave hull of the station's stop/platform/exit points), one `platform`
@@ -18,6 +24,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use geo::{ConcaveHull, ConvexHull, MultiPoint, Point as GeoPoint};
@@ -26,6 +33,7 @@ use serde_json::{Value, json};
 
 use crate::context::Context;
 use crate::fsx;
+use crate::regions::{LineKind, Projection, TransitOverlayDriver, overlay_driver};
 use crate::step::Step;
 
 const IMPLEMENTED: &[&str] = &["transit-lines", "metro-stations"];
@@ -58,6 +66,14 @@ impl Step for BuildOverlays {
             tracing::info!("region declares no implemented overlays; skipping");
             return Ok(());
         }
+        let Some(driver) = overlay_driver(ctx.country(), &ctx.region.id) else {
+            tracing::info!(
+                country = ctx.country(),
+                city = %ctx.region.id,
+                "no transit-overlay driver for this region; skipping overlays"
+            );
+            return Ok(());
+        };
         let clip = ctx.graph_dir().join(ctx.clipped_osm_filename());
         anyhow::ensure!(
             clip.is_file(),
@@ -68,11 +84,14 @@ impl Step for BuildOverlays {
         for kind in kinds {
             match kind.as_str() {
                 "transit-lines" => {
-                    let gtfs = ctx.graph_dir().join("ATAC.gtfs.zip");
+                    let gtfs = ctx.graph_dir().join(driver.gtfs_filename());
                     let clip = clip.clone();
+                    let driver = Arc::clone(&driver);
                     // osmpbf is blocking; run the build off the async runtime.
-                    let fc = tokio::task::spawn_blocking(move || build_transit_lines(&clip, &gtfs))
-                        .await??;
+                    let fc = tokio::task::spawn_blocking(move || {
+                        build_transit_lines(&clip, &gtfs, driver.as_ref())
+                    })
+                    .await??;
                     let bytes = serde_json::to_vec(&fc)?;
                     fsx::write_atomic(&ctx.output("output/overlays/transit-lines.geojson"), &bytes)
                         .await?;
@@ -83,8 +102,11 @@ impl Step for BuildOverlays {
                 }
                 "metro-stations" => {
                     let clip = clip.clone();
-                    let fc =
-                        tokio::task::spawn_blocking(move || build_metro_stations(&clip)).await??;
+                    let driver = Arc::clone(&driver);
+                    let fc = tokio::task::spawn_blocking(move || {
+                        build_metro_stations(&clip, driver.as_ref())
+                    })
+                    .await??;
                     let bytes = serde_json::to_vec(&fc)?;
                     fsx::write_atomic(
                         &ctx.output("output/overlays/metro-stations.geojson"),
@@ -113,30 +135,27 @@ fn declared_implemented(ctx: &Context) -> Vec<String> {
         .collect()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum Kind {
-    Metro,
-    Tram,
-}
-
-impl Kind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Kind::Metro => "metro",
-            Kind::Tram => "tram",
-        }
+/// The GeoJSON `kind` label for a route line.
+fn line_kind_str(kind: LineKind) -> &'static str {
+    match kind {
+        LineKind::Metro => "metro",
+        LineKind::Tram => "tram",
     }
 }
 
 struct RouteRel {
-    kind: Kind,
+    kind: LineKind,
     line: String,
     way_ids: Vec<i64>,
 }
 
 /// Build the transit-lines FeatureCollection from the OSM clip + (optional) GTFS.
-fn build_transit_lines(clip: &Path, gtfs: &Path) -> anyhow::Result<Value> {
-    let rels = collect_route_relations(clip)?;
+fn build_transit_lines(
+    clip: &Path,
+    gtfs: &Path,
+    driver: &dyn TransitOverlayDriver,
+) -> anyhow::Result<Value> {
+    let rels = collect_route_relations(clip, driver)?;
     let needed_ways: HashSet<i64> = rels
         .iter()
         .flat_map(|r| r.way_ids.iter().copied())
@@ -147,7 +166,7 @@ fn build_transit_lines(clip: &Path, gtfs: &Path) -> anyhow::Result<Value> {
     let gtfs_routes = read_gtfs_routes(gtfs).unwrap_or_default();
 
     // Group relations by (kind, line); union their track ways (dedup by id).
-    let mut groups: HashMap<(Kind, String), Vec<i64>> = HashMap::new();
+    let mut groups: HashMap<(LineKind, String), Vec<i64>> = HashMap::new();
     for r in rels {
         groups
             .entry((r.kind, r.line.clone()))
@@ -178,26 +197,24 @@ fn build_transit_lines(clip: &Path, gtfs: &Path) -> anyhow::Result<Value> {
             continue;
         }
 
-        let gkey = match kind {
-            Kind::Metro => format!("ME{line}"),
-            Kind::Tram => line.clone(),
-        };
+        let gkey = driver.gtfs_key(kind, &line);
         let g = gtfs_routes.get(&gkey);
         let route = format!(
-            "ATAC:{}",
+            "{}{}",
+            driver.route_id_prefix(),
             g.map(|r| r.id.clone()).unwrap_or_else(|| gkey.clone())
         );
         let color = match kind {
-            Kind::Metro => Some(
+            LineKind::Metro => Some(
                 g.and_then(|r| (!r.color.is_empty()).then(|| format!("#{}", r.color)))
-                    .unwrap_or_else(|| contract_metro_color(&line).to_string()),
+                    .unwrap_or_else(|| driver.metro_color(&line).to_string()),
             ),
-            Kind::Tram => None,
+            LineKind::Tram => None,
         };
 
         features.push(json!({
             "type": "Feature",
-            "properties": { "kind": kind.as_str(), "route": route, "line": line, "color": color },
+            "properties": { "kind": line_kind_str(kind), "route": route, "line": line, "color": color },
             "geometry": { "type": "MultiLineString", "coordinates": members },
         }));
     }
@@ -206,9 +223,12 @@ fn build_transit_lines(clip: &Path, gtfs: &Path) -> anyhow::Result<Value> {
     Ok(json!({ "type": "FeatureCollection", "features": features }))
 }
 
-/// Pass 1: ATAC `route=subway|tram` relations with a ref, and their track-way
-/// members (members whose role doesn't start with `platform`).
-fn collect_route_relations(clip: &Path) -> anyhow::Result<Vec<RouteRel>> {
+/// Pass 1: the driver-owned `route=subway|tram` relations with a ref, and their
+/// track-way members (members whose role doesn't start with `platform`).
+fn collect_route_relations(
+    clip: &Path,
+    driver: &dyn TransitOverlayDriver,
+) -> anyhow::Result<Vec<RouteRel>> {
     let mut out = Vec::new();
     ElementReader::from_path(clip)?.for_each(|el| {
         if let Element::Relation(rel) = el {
@@ -226,12 +246,12 @@ fn collect_route_relations(clip: &Path) -> anyhow::Result<Vec<RouteRel>> {
             let (Some(route), Some(line)) = (route, line) else {
                 return;
             };
-            if operator.as_deref() != Some("ATAC") || line.is_empty() {
+            if operator.as_deref() != Some(driver.operator()) || line.is_empty() {
                 return;
             }
             let kind = match route.as_str() {
-                "subway" if matches!(line.as_str(), "A" | "B" | "C") => Kind::Metro,
-                "tram" => Kind::Tram,
+                "subway" if driver.is_metro_line(&line) => LineKind::Metro,
+                "tram" => LineKind::Tram,
                 _ => return,
             };
             let way_ids: Vec<i64> = rel
@@ -333,15 +353,6 @@ fn read_gtfs_routes(gtfs: &Path) -> anyhow::Result<HashMap<String, GtfsRoute>> {
     Ok(out)
 }
 
-fn contract_metro_color(line: &str) -> &'static str {
-    match line {
-        "A" => "#E27439",
-        "B" | "B1" => "#0570B5",
-        "C" => "#008456",
-        _ => "#666666",
-    }
-}
-
 /// Metro first (A, B, C), then trams ascending by number.
 fn sort_metro_first(features: &mut [Value]) {
     features.sort_by(|a, b| {
@@ -362,10 +373,8 @@ fn round7(v: f64) -> f64 {
 
 // ─── metro-stations (concept doc 09 §2) ──────────────────────────────────────
 
-// Local planar projection around central Rome (metres per degree at ~41.9°N).
-const ORIGIN_LON: f64 = 12.5;
-const ORIGIN_LAT: f64 = 41.9;
-const M_LON: f64 = 82_800.0;
+// Metres per degree latitude — constant everywhere; the longitude scale and the
+// projection origin are region-specific and come from the driver.
 const M_LAT: f64 = 111_320.0;
 const HALF_LEN_M: f64 = 52.0; // platform half-length along the track
 const DENSIFY_M: f64 = 16.0;
@@ -374,13 +383,16 @@ const PLAT_WIDTH_M: f64 = 5.0;
 const EXIT_ASSIGN_M: f64 = 400.0;
 const HULL_CONCAVITY_M: f64 = 60.0;
 
-fn to_m(lon: f64, lat: f64) -> (f64, f64) {
-    ((lon - ORIGIN_LON) * M_LON, (lat - ORIGIN_LAT) * M_LAT)
+fn to_m(proj: Projection, lon: f64, lat: f64) -> (f64, f64) {
+    (
+        (lon - proj.origin_lon) * proj.m_per_deg_lon,
+        (lat - proj.origin_lat) * M_LAT,
+    )
 }
-fn from_m(x: f64, y: f64) -> [f64; 2] {
+fn from_m(proj: Projection, x: f64, y: f64) -> [f64; 2] {
     [
-        round7(ORIGIN_LON + x / M_LON),
-        round7(ORIGIN_LAT + y / M_LAT),
+        round7(proj.origin_lon + x / proj.m_per_deg_lon),
+        round7(proj.origin_lat + y / M_LAT),
     ]
 }
 
@@ -407,8 +419,9 @@ struct MetroNodes {
 }
 
 /// Build the metro-stations FeatureCollection from the OSM clip.
-fn build_metro_stations(clip: &Path) -> anyhow::Result<Value> {
-    let mut rels = collect_metro_relations(clip)?;
+fn build_metro_stations(clip: &Path, driver: &dyn TransitOverlayDriver) -> anyhow::Result<Value> {
+    let proj = driver.projection();
+    let mut rels = collect_metro_relations(clip, driver)?;
     let stop_ids: HashSet<i64> = rels
         .iter()
         .flat_map(|r| r.stop_ids.iter().copied())
@@ -418,7 +431,7 @@ fn build_metro_stations(clip: &Path) -> anyhow::Result<Value> {
         stops,
         entrances,
         node_xy,
-    } = collect_metro_nodes(clip, &stop_ids, &track_node_ids)?;
+    } = collect_metro_nodes(clip, proj, &stop_ids, &track_node_ids)?;
 
     // Real track polylines in local metres (for the platform strips).
     let tracks: Vec<Vec<(f64, f64)>> = track_node_lists
@@ -431,14 +444,17 @@ fn build_metro_stations(clip: &Path) -> anyhow::Result<Value> {
         .filter(|p: &Vec<(f64, f64)>| p.len() >= 2)
         .collect();
 
-    // B1 split: a line-B direction serving Jonio / Conca d'Oro is the B1 branch.
+    // Branch split (driver-owned): relabel a line to its branch from the slugs of
+    // the stops it serves (e.g. Rome's B → B1 for the Jonio / Conca d'Oro spur).
     for r in &mut rels {
-        if r.line == "B"
-            && r.stop_ids
-                .iter()
-                .any(|id| stops.get(id).is_some_and(|s| is_b1_terminus(&s.name)))
-        {
-            r.line = "B1".to_string();
+        let stop_slugs: Vec<String> = r
+            .stop_ids
+            .iter()
+            .filter_map(|id| stops.get(id))
+            .map(|s| slug(&s.name))
+            .collect();
+        if let Some(branch) = driver.relabel_branch(&r.line, &stop_slugs) {
+            r.line = branch;
         }
     }
 
@@ -467,11 +483,13 @@ fn build_metro_stations(clip: &Path) -> anyhow::Result<Value> {
                     .extend(ring.iter().copied());
                 let coords: Vec<Value> = ring
                     .iter()
-                    .map(|(x, y)| Value::Array(from_m(*x, *y).iter().map(|v| json!(v)).collect()))
+                    .map(|(x, y)| {
+                        Value::Array(from_m(proj, *x, *y).iter().map(|v| json!(v)).collect())
+                    })
                     .collect();
                 let mut props = json!({
                     "kind": "platform", "station": slug, "line": r.line,
-                    "color": contract_metro_color(&r.line), "level": -1,
+                    "color": driver.metro_color(&r.line), "level": -1,
                 });
                 if let Some(t) = &terminus {
                     props["name"] = json!(format!("dir. {t}"));
@@ -495,7 +513,7 @@ fn build_metro_stations(clip: &Path) -> anyhow::Result<Value> {
             exits.push(json!({
                 "type": "Feature",
                 "properties": { "kind": "exit", "station": slug, "name": e.name },
-                "geometry": { "type": "Point", "coordinates": from_m(e.x, e.y) },
+                "geometry": { "type": "Point", "coordinates": from_m(proj, e.x, e.y) },
             }));
         }
     }
@@ -506,7 +524,7 @@ fn build_metro_stations(clip: &Path) -> anyhow::Result<Value> {
     slugs.sort();
     let mut features = Vec::new();
     for slug in slugs {
-        if let Some(ring) = station_hull(&hull_pts[slug]) {
+        if let Some(ring) = station_hull(proj, &hull_pts[slug]) {
             features.push(json!({
                 "type": "Feature",
                 "properties": { "kind": "concourse", "station": slug, "level": 0 },
@@ -519,14 +537,12 @@ fn build_metro_stations(clip: &Path) -> anyhow::Result<Value> {
     Ok(json!({ "type": "FeatureCollection", "features": features }))
 }
 
-fn is_b1_terminus(name: &str) -> bool {
-    let n = slug(name);
-    n.contains("jonio") || n.contains("conca")
-}
-
-/// Pass A: metro `route=subway` relations (ref A/B/C) with their ordered stop
+/// Pass A: the driver's metro `route=subway` relations with their ordered stop
 /// node members (role starting `stop`).
-fn collect_metro_relations(clip: &Path) -> anyhow::Result<Vec<MetroRel>> {
+fn collect_metro_relations(
+    clip: &Path,
+    driver: &dyn TransitOverlayDriver,
+) -> anyhow::Result<Vec<MetroRel>> {
     let mut out = Vec::new();
     ElementReader::from_path(clip)?.for_each(|el| {
         if let Element::Relation(rel) = el {
@@ -542,7 +558,7 @@ fn collect_metro_relations(clip: &Path) -> anyhow::Result<Vec<MetroRel>> {
             let (Some(route), Some(line)) = (route, line) else {
                 return;
             };
-            if route != "subway" || !matches!(line.as_str(), "A" | "B" | "C") {
+            if route != "subway" || !driver.is_metro_line(&line) {
                 return;
             }
             let stop_ids: Vec<i64> = rel
@@ -581,6 +597,7 @@ fn collect_track_ways(clip: &Path) -> anyhow::Result<(Vec<Vec<i64>>, HashSet<i64
 /// track nodes' coords.
 fn collect_metro_nodes(
     clip: &Path,
+    proj: Projection,
     stop_ids: &HashSet<i64>,
     track_ids: &HashSet<i64>,
 ) -> anyhow::Result<MetroNodes> {
@@ -589,7 +606,7 @@ fn collect_metro_nodes(
     let mut node_xy = HashMap::new();
 
     let mut handle = |id: i64, lon: f64, lat: f64, tag: &dyn Fn(&str) -> Option<String>| {
-        let (x, y) = to_m(lon, lat);
+        let (x, y) = to_m(proj, lon, lat);
         if track_ids.contains(&id) {
             node_xy.insert(id, (x, y));
         }
@@ -730,7 +747,7 @@ fn nearest_station(centroids: &[(String, f64, f64)], x: f64, y: f64) -> Option<(
 
 /// The concave hull of a station's points as a lon/lat ring (convex-hull
 /// fallback for sparse stations).
-fn station_hull(pts: &[(f64, f64)]) -> Option<Vec<Value>> {
+fn station_hull(proj: Projection, pts: &[(f64, f64)]) -> Option<Vec<Value>> {
     if pts.len() < 3 {
         return None;
     }
@@ -755,7 +772,7 @@ fn station_hull(pts: &[(f64, f64)]) -> Option<Vec<Value>> {
     }
     Some(
         ring.iter()
-            .map(|(x, y)| Value::Array(from_m(*x, *y).iter().map(|v| json!(v)).collect()))
+            .map(|(x, y)| Value::Array(from_m(proj, *x, *y).iter().map(|v| json!(v)).collect()))
             .collect(),
     )
 }
@@ -789,6 +806,13 @@ fn slug(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regions::italy::rome::RomeOverlayDriver;
+
+    /// The local-planar projection the generic geometry tests run in (Rome's, via
+    /// the driver) — the metre math is generic; we just need a concrete origin.
+    fn test_proj() -> Projection {
+        RomeOverlayDriver.projection()
+    }
 
     #[test]
     fn slug_strips_accents_and_punctuation() {
@@ -796,13 +820,6 @@ mod tests {
         assert_eq!(slug("Conca d'Oro"), "conca-d-oro");
         assert_eq!(slug("Niccolò"), "niccolo");
         assert_eq!(slug("Termini"), "termini");
-    }
-
-    #[test]
-    fn b1_terminus_detected() {
-        assert!(is_b1_terminus("Jonio"));
-        assert!(is_b1_terminus("Conca d'Oro"));
-        assert!(!is_b1_terminus("Laurentina"));
     }
 
     #[test]
@@ -827,17 +844,15 @@ mod tests {
             (0.0, 100.0),
             (50.0, 50.0),
         ];
-        let ring = station_hull(&pts).unwrap();
+        let ring = station_hull(test_proj(), &pts).unwrap();
         assert!(ring.len() >= 4, "a hull ring");
-        // ring coordinates are [lon, lat] back in WGS84 near the Rome origin.
+        // ring coordinates are [lon, lat] back in WGS84 near the projection origin.
         let lon = ring[0][0].as_f64().unwrap();
         assert!((12.0..13.0).contains(&lon));
     }
 
     #[test]
-    fn contract_colors_and_rounding() {
-        assert_eq!(contract_metro_color("A"), "#E27439");
-        assert_eq!(contract_metro_color("B"), "#0570B5");
+    fn round7_rounds_to_seven_places() {
         assert_eq!(round7(12.123456789), 12.1234568);
     }
 

@@ -47,6 +47,12 @@ impl Context {
         self.data_dir.join(rel)
     }
 
+    /// The deployment's country: the first segment of the resolved region target
+    /// (`italy/lazio/rome` → `italy`). Used to select region drivers (ADR 0017).
+    pub fn country(&self) -> &str {
+        self.region.target.split('/').next().unwrap_or("")
+    }
+
     /// Basemap render extent: the region's, overridable by `PMTILES_BOUNDS`
     /// (e.g. to shrink an all-Italy basemap to fit a small host).
     pub fn basemap_bounds(&self) -> Option<String> {
