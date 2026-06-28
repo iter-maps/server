@@ -42,7 +42,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
-          arguments: --config .config/deny.toml
+          command-arguments: --config .config/deny.toml
 
   # Each hygiene linter gets its own clean checkout: the typos action leaves a
   # `typos` binary in the workspace, which would otherwise make REUSE (which
