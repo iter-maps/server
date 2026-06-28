@@ -2,6 +2,7 @@ mod gtfs_rt;
 mod job;
 mod jobs;
 mod netex;
+mod reliability;
 mod scheduler;
 
 use std::path::PathBuf;

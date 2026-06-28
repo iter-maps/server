@@ -86,9 +86,9 @@ pipeline and worker frameworks are in place. What remains:
   pipeline run (k8s CronJob / cron with `FORCE_GTFS`+`FORCE_GRAPH`) rather than a
   job in the lean worker, which lacks the OTP build toolchain. The worker runs the
   **GTFS-RT ingestion** job (ADR 0015: poll → decode → stable-key delay events,
-  proven on the live ATAC feed); the FL NeTEx→GTFS conversion and the persistent
-  reliability **rollup** tier (Tier-0/1/2 + its P7-stateless exception ADR) land
-  next.
+  proven on the live ATAC feed) and the FL NeTEx→GTFS conversion; the persistent
+  reliability **rollup** tier (Tier-0/1/2 + its P7-stateless exception) has now
+  landed (ADR 0022) — its gateway read endpoint is the remaining gap.
   Design: concept doc 04 — data-pipeline, doc 12 — deployment-and-operations ·
   Decision: ADR 0007.
 
@@ -104,7 +104,7 @@ concept doc and ADR.
 | Place discovery (**wave 1 built** — enrichment + correlation; ADRs 0011/0012) | gateway fusion | [`place-discovery.md`](place-discovery.md) |
 | Traffic data | pipeline → gateway | [`traffic-data.md`](traffic-data.md) |
 | Crowd telemetry | gateway ingest + worker | [`crowd-telemetry.md`](crowd-telemetry.md) |
-| Historical reliability (**RT ingestion built**; rollup tier next — ADR 0015) | worker archive → gateway | [`historical-reliability.md`](historical-reliability.md) |
+| Historical reliability (**RT ingestion + rollup tier built**; read endpoint next — ADRs 0015/0022) | worker archive → gateway | [`historical-reliability.md`](historical-reliability.md) |
 | Italy/Europe rail + catalog | pipeline acquisition | [`italy-europe-rail.md`](italy-europe-rail.md) |
 | Unified overlay network | pipeline overlay model | [`unified-overlay-network.md`](unified-overlay-network.md) |
 | Stations & pathways | pipeline → routing | [`stations-pathways.md`](stations-pathways.md) |

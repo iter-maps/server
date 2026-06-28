@@ -100,7 +100,13 @@ routable GTFS for the OTP graph build (ADR 0016) — and **GTFS-RT ingestion**
 (`rt-reliability`, every 30 s) — polls ATAC's
 trip-updates feed, decodes it (a vendored `prost` GTFS-RT subset, no `protoc`),
 and derives validated stop-delay events on the stable (route, direction, stop,
-date) key (ADR 0015). The persistent reliability rollup tier lands next. Jobs are
+date) key (ADR 0015). Those events feed the **persistent reliability rollup
+tier** (`reliability-rollup`, ADR 0022): derived events are teed into a hot
+Tier-0 partition, folded into bounded warm Tier-1 aggregates (mergeable
+moments + a fixed-bin delay histogram), then merged into a tiny permanent Tier-2
+keyed on (route, direction, stop, tod-bucket, day-type) — the worker's first
+persistent state, holding vehicle/road aggregates only (never a user/device/
+session key). Jobs are
 a `name`/`interval`/`run` abstraction — a job failure is logged and the schedule
 continues (unlike a pipeline step, which aborts), so a transient upstream blip
 never takes the worker down; it scales independently of the request path.

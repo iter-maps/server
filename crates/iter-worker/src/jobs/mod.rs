@@ -1,10 +1,11 @@
 //! Background jobs, derived from the resolved region's feeds (ADR 0019).
 //!
-//! `fl_gtfs` (FL NeTEx→GTFS) and `rt_reliability` (GTFS-RT ingestion) are wired;
-//! the reliability rollup tier and daily graph-refresh trigger are tracked in
-//! `docs/roadmap/`.
+//! `fl_gtfs` (FL NeTEx→GTFS), `rt_reliability` (GTFS-RT ingestion), and
+//! `reliability_rollup` (Tier-0/1/2 rollups, ADR 0022) are wired; the daily
+//! graph-refresh trigger is tracked in `docs/roadmap/`.
 
 pub mod fl_gtfs;
+pub mod reliability_rollup;
 pub mod rt_reliability;
 
 use std::path::{Path, PathBuf};
@@ -24,6 +25,15 @@ pub fn from_region(
     http: &reqwest::Client,
 ) -> Vec<Box<dyn Job>> {
     let mut jobs: Vec<Box<dyn Job>> = Vec::new();
+
+    // The reliability rollup tree lives under the artifact root by default
+    // (sibling of `graph/`); `RELIABILITY_DIR` overrides it.
+    let reliability_dir = config::opt("RELIABILITY_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join("reliability"));
+    // True once at least one trip-updates feed wires the ingest job, so we only
+    // schedule the rollup job when there's something to roll up.
+    let mut has_rt = false;
 
     for feed in region.enabled_feeds() {
         if feed.source.as_deref() == Some("netex") {
@@ -53,8 +63,16 @@ pub fn from_region(
             jobs.push(Box::new(rt_reliability::RtReliability::new(
                 url.to_string(),
                 http.clone(),
+                reliability_dir.clone(),
             )));
+            has_rt = true;
         }
+    }
+
+    if has_rt {
+        jobs.push(Box::new(reliability_rollup::ReliabilityRollup::new(
+            reliability_dir,
+        )));
     }
 
     jobs
@@ -79,5 +97,10 @@ mod tests {
         // TRENITALIA-FL is the lone netex feed; ATAC the lone trip-updates feed.
         assert_eq!(names.iter().filter(|n| **n == "fl-gtfs").count(), 1);
         assert_eq!(names.iter().filter(|n| **n == "rt-reliability").count(), 1);
+        // The rollup job is scheduled once, because there's an RT ingest feed.
+        assert_eq!(
+            names.iter().filter(|n| **n == "reliability-rollup").count(),
+            1
+        );
     }
 }

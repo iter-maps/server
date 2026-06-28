@@ -66,3 +66,5 @@ a typo) do not need one.
 - [0019](0019-worker-resolves-region-feed-urls.md) — The worker resolves its region; feeds carry their source URLs
 - [0020](0020-otp-consumes-region-gtfs-rt-for-live-routing.md) — OTP consumes region GTFS-RT for live routing
 - [0021](0021-fl-calendar-from-validdaybits.md) — FL calendar from ValidDayBits (calendar_dates-only)
+- [0022](0022-reliability-rollup-tier.md) — Persistent reliability rollup tier in the worker
+- [0023](0023-tier2-rebuild-and-easter-monday.md) — Tier-2 is a pure rebuild from Tier-1, plus Easter Monday in the day-type calendar
