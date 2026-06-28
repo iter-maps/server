@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-06-28
 - **Supersedes:** —
-- **Superseded by:** —
+- **Superseded by:** 0021 (calendar emission only; the converter otherwise stands)
 
 ## Context
 

@@ -8,8 +8,11 @@
 //! resolve: `Line` → route, `ScheduledStopPoint` (with its `Location`) → stop,
 //! `ServiceJourneyPattern` → the ordered stop sequence, `ServiceJourney` +
 //! `passingTimes` → trip + stop_times (passing times reference a
-//! `StopPointInJourneyPattern`, resolved back to its stop), and `DayType`
-//! days-of-week + the journeys' `ValidBetween` → the calendar.
+//! `StopPointInJourneyPattern`, resolved back to its stop), and the calendar:
+//! each `DayTypeAssignment` links a `DayType` to a `UicOperatingPeriod` whose
+//! `ValidDayBits` are expanded into the exact running dates of `calendar_dates`
+//! (ADR 0016). The `DaysOfWeek` are still read, but only to bound `date_min`/
+//! `date_max`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Write};
@@ -28,6 +31,10 @@ pub struct Netex {
     pub pattern_pts: HashMap<String, (u32, String)>,
     /// `DayType` id → [mon, tue, …, sun].
     pub daytypes: BTreeMap<String, [bool; 7]>,
+    /// `UicOperatingPeriod` id → its from-date and `ValidDayBits`.
+    pub operating_periods: BTreeMap<String, OperatingPeriod>,
+    /// (`OperatingPeriodRef`, `DayTypeRef`) — each `DayTypeAssignment`.
+    pub assignments: Vec<(String, String)>,
     pub journeys: Vec<Journey>,
     pub date_min: String,
     pub date_max: String,
@@ -54,6 +61,12 @@ pub struct PassTime {
     pub sp: String,
     pub arr: String,
     pub dep: String,
+}
+/// A `UicOperatingPeriod`: `bits[i]` = `1` means service runs on
+/// `from` + `i` days (`from` is `YYYYMMDD`).
+pub struct OperatingPeriod {
+    pub from: String,
+    pub bits: String,
 }
 
 /// Conversion counts, for the build-state report.
@@ -85,6 +98,10 @@ pub fn parse<R: BufRead>(r: R, profile: &dyn NetexProfile) -> anyhow::Result<Net
     let mut sp_pt: Option<(String, u32, String)> = None;
     let mut in_passing = false;
     let mut cur_time: Option<PassTime> = None;
+    // (id, from-date, bits) while inside a UicOperatingPeriod.
+    let mut period: Option<(String, String, String)> = None;
+    // (OperatingPeriodRef, DayTypeRef) while inside a DayTypeAssignment.
+    let mut assignment: Option<(String, String)> = None;
 
     loop {
         match reader.read_event_into(&mut buf)? {
@@ -114,6 +131,10 @@ pub fn parse<R: BufRead>(r: R, profile: &dyn NetexProfile) -> anyhow::Result<Net
                         ));
                     }
                     "DayType" => daytype = Some((gid(&attr(&e, "id")), [false; 7])),
+                    "UicOperatingPeriod" => {
+                        period = Some((gid(&attr(&e, "id")), String::new(), String::new()));
+                    }
+                    "DayTypeAssignment" => assignment = Some((String::new(), String::new())),
                     "ServiceJourney" => {
                         journey = Some(Journey {
                             id: gid(&attr(&e, "id")),
@@ -158,8 +179,15 @@ pub fn parse<R: BufRead>(r: R, profile: &dyn NetexProfile) -> anyhow::Result<Net
                             t.sp = r();
                         }
                     }
+                    "OperatingPeriodRef" => {
+                        if let Some(a) = assignment.as_mut() {
+                            a.0 = r();
+                        }
+                    }
                     "DayTypeRef" => {
-                        if let Some(j) = journey.as_mut()
+                        if let Some(a) = assignment.as_mut() {
+                            a.1 = r();
+                        } else if let Some(j) = journey.as_mut()
                             && j.service.is_empty()
                         {
                             j.service = r();
@@ -233,6 +261,11 @@ pub fn parse<R: BufRead>(r: R, profile: &dyn NetexProfile) -> anyhow::Result<Net
                             *d = parse_dow(txt);
                         }
                     }
+                    "FromDate" if period.is_some() => {
+                        if let Some(p) = period.as_mut() {
+                            p.1 = date8(txt);
+                        }
+                    }
                     "FromDate" if journey.is_some() => {
                         let d = date8(txt);
                         if !d.is_empty() && (nx.date_min.is_empty() || d < nx.date_min) {
@@ -243,6 +276,11 @@ pub fn parse<R: BufRead>(r: R, profile: &dyn NetexProfile) -> anyhow::Result<Net
                         let d = date8(txt);
                         if d > nx.date_max {
                             nx.date_max = d;
+                        }
+                    }
+                    "ValidDayBits" => {
+                        if let Some(p) = period.as_mut() {
+                            p.2 = txt.to_string();
                         }
                     }
                     "ArrivalTime" => {
@@ -273,6 +311,23 @@ pub fn parse<R: BufRead>(r: R, profile: &dyn NetexProfile) -> anyhow::Result<Net
                     "DayType" => {
                         if let Some((id, d)) = daytype.take() {
                             nx.daytypes.insert(id, d);
+                        }
+                    }
+                    "UicOperatingPeriod" => {
+                        if let Some((id, from, bits)) = period.take()
+                            && !from.is_empty()
+                            && !bits.is_empty()
+                        {
+                            nx.operating_periods
+                                .insert(id, OperatingPeriod { from, bits });
+                        }
+                    }
+                    "DayTypeAssignment" => {
+                        if let Some((op, dt)) = assignment.take()
+                            && !op.is_empty()
+                            && !dt.is_empty()
+                        {
+                            nx.assignments.push((op, dt));
                         }
                     }
                     "StopPointInJourneyPattern" => {
@@ -325,7 +380,6 @@ pub fn write_gtfs_zip<W: Write + std::io::Seek>(
     } else {
         &nx.operator
     };
-    let (start, end) = (nz(&nx.date_min, "20200101"), nz(&nx.date_max, "20201231"));
     let mut st = Stats::default();
 
     zip.start_file("agency.txt", opts)?;
@@ -371,24 +425,17 @@ pub fn write_gtfs_zip<W: Write + std::io::Seek>(
         st.routes += 1;
     }
 
-    zip.start_file("calendar.txt", opts)?;
-    writeln!(
-        zip,
-        "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date"
-    )?;
-    for (id, d) in &nx.daytypes {
-        writeln!(
-            zip,
-            "{},{},{},{},{},{},{},{},{start},{end}",
-            csv(id),
-            d[0] as u8,
-            d[1] as u8,
-            d[2] as u8,
-            d[3] as u8,
-            d[4] as u8,
-            d[5] as u8,
-            d[6] as u8,
-        )?;
+    // Each service is the exact list of dates expanded from its
+    // UicOperatingPeriod's ValidDayBits (calendar_dates-only, exception_type=1);
+    // no calendar.txt is emitted. A service with zero dates is omitted so trips
+    // referencing it are dropped too.
+    let services = service_dates(nx);
+    zip.start_file("calendar_dates.txt", opts)?;
+    writeln!(zip, "service_id,date,exception_type")?;
+    for (id, dates) in &services {
+        for date in dates {
+            writeln!(zip, "{},{date},1", csv(id))?;
+        }
         st.services += 1;
     }
 
@@ -396,7 +443,7 @@ pub fn write_gtfs_zip<W: Write + std::io::Seek>(
     writeln!(zip, "route_id,service_id,trip_id,trip_headsign")?;
     let mut valid_trips = HashMap::new();
     for j in &nx.journeys {
-        if !nx.lines.contains_key(&j.line) || !nx.daytypes.contains_key(&j.service) {
+        if !nx.lines.contains_key(&j.line) || !services.contains_key(&j.service) {
             continue;
         }
         writeln!(
@@ -486,8 +533,69 @@ fn date8(s: &str) -> String {
     s.split('T').next().unwrap_or("").replace('-', "")
 }
 
-fn nz<'a>(s: &'a str, default: &'a str) -> &'a str {
-    if s.is_empty() { default } else { s }
+/// Resolve each `DayType` to its concrete running dates by joining the
+/// `DayTypeAssignment`s to their `UicOperatingPeriod`s and expanding the
+/// `ValidDayBits`. A service with no running dates is omitted.
+fn service_dates(nx: &Netex) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (op_ref, dt_ref) in &nx.assignments {
+        let Some(p) = nx.operating_periods.get(op_ref) else {
+            continue;
+        };
+        let dates = expand_bits(&p.from, &p.bits);
+        if !dates.is_empty() {
+            out.entry(dt_ref.clone()).or_default().extend(dates);
+        }
+    }
+    out
+}
+
+/// Expand `ValidDayBits` into `YYYYMMDD` dates: `bit[i]` (set) means service
+/// runs on `from` + `i` days. `from` is `YYYYMMDD`; an unset bit (or
+/// `isAvailable=false`, encoded as `0`) yields no date.
+fn expand_bits(from: &str, bits: &str) -> Vec<String> {
+    let Some(start) = days_from_ymd(from) else {
+        return Vec::new();
+    };
+    bits.chars()
+        .enumerate()
+        .filter(|(_, c)| *c == '1')
+        .map(|(i, _)| ymd_from_days(start + i as i64))
+        .collect()
+}
+
+/// `YYYYMMDD` → days since 1970-01-01 (Howard Hinnant's `days_from_civil`).
+fn days_from_ymd(s: &str) -> Option<i64> {
+    if s.len() != 8 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let y: i64 = s[0..4].parse().ok()?;
+    let m: i64 = s[4..6].parse().ok()?;
+    let d: i64 = s[6..8].parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y = y - i64::from(m <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146097 + doe - 719468)
+}
+
+/// Days since 1970-01-01 → `YYYYMMDD` (Howard Hinnant's `civil_from_days`).
+fn ymd_from_days(z: i64) -> String {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + i64::from(m <= 2);
+    format!("{y:04}{m:02}{d:02}")
 }
 
 /// CSV-quote a field if it contains a comma, quote, or newline.
@@ -533,11 +641,25 @@ mod tests {
           </pointsInSequence>
         </ServiceJourneyPattern></journeyPatterns>
       </ServiceFrame>
-      <ServiceCalendarFrame><dayTypes>
-        <DayType id="IT:ITI4:DayType:0083_1"><Name>feriale</Name>
-          <properties><PropertyOfDay><DaysOfWeek>Monday Tuesday Wednesday Thursday Friday</DaysOfWeek></PropertyOfDay></properties>
-        </DayType>
-      </dayTypes></ServiceCalendarFrame>
+      <ServiceCalendarFrame><ServiceCalendar id="IT:ITI4:ServiceCalendar:0083">
+        <dayTypes>
+          <DayType id="IT:ITI4:DayType:0083_1"><Name>feriale</Name>
+            <properties><PropertyOfDay><DaysOfWeek>Monday Tuesday Wednesday Thursday Friday</DaysOfWeek></PropertyOfDay></properties>
+          </DayType>
+        </dayTypes>
+        <operatingPeriods>
+          <UicOperatingPeriod id="IT:ITI4:UicOperatingPeriod:0083_1">
+            <FromDate>2026-04-21T00:00:00.000+02:00</FromDate><ToDate>2026-04-28T23:59:59.000+02:00</ToDate>
+            <ValidDayBits>11110011</ValidDayBits>
+          </UicOperatingPeriod>
+        </operatingPeriods>
+        <dayTypeAssignments>
+          <DayTypeAssignment order="1" id="IT:ITI4:DayTypeAssignment:0083_1">
+            <OperatingPeriodRef ref="IT:ITI4:UicOperatingPeriod:0083_1"/>
+            <DayTypeRef ref="IT:ITI4:DayType:0083_1"/>
+          </DayTypeAssignment>
+        </dayTypeAssignments>
+      </ServiceCalendar></ServiceCalendarFrame>
       <TimetableFrame><vehicleJourneys>
         <ServiceJourney id="IT:ITI4:ServiceJourney:J1_0083">
           <ValidBetween><FromDate>2026-04-21T00:00:00.000+02:00</FromDate><ToDate>2026-04-28T23:59:59.000+02:00</ToDate></ValidBetween>
@@ -573,6 +695,13 @@ mod tests {
             nx.daytypes.get("0083_1").unwrap(),
             &[true, true, true, true, true, false, false]
         );
+        let op = nx.operating_periods.get("0083_1").unwrap();
+        assert_eq!(op.from, "20260421");
+        assert_eq!(op.bits, "11110011");
+        assert_eq!(
+            nx.assignments,
+            vec![("0083_1".to_string(), "0083_1".to_string())]
+        );
         assert_eq!(nx.date_min, "20260421");
         assert_eq!(nx.date_max, "20260428");
         assert_eq!(nx.journeys.len(), 1);
@@ -601,10 +730,24 @@ mod tests {
             "routes.txt",
             "trips.txt",
             "stop_times.txt",
-            "calendar.txt",
+            "calendar_dates.txt",
         ] {
             assert!(zip.by_name(f).is_ok(), "{f} present");
         }
+        // calendar_dates-only: no calendar.txt is emitted.
+        assert!(zip.by_name("calendar.txt").is_err());
+
+        // ValidDayBits 11110011 over 2026-04-21..28 → Sat/Sun (the 0 bits) off.
+        let mut cal = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("calendar_dates.txt").unwrap(), &mut cal)
+            .unwrap();
+        for date in [
+            "20260421", "20260422", "20260423", "20260424", "20260427", "20260428",
+        ] {
+            assert!(cal.contains(&format!("0083_1,{date},1")), "{date} runs");
+        }
+        assert!(!cal.contains("0083_1,20260425,1")); // Sat off
+        assert!(!cal.contains("0083_1,20260426,1")); // Sun off
         // The profile's agency + the route's agency_id stay byte-for-byte the
         // Trenitalia-FL literals (the SAMPLE has an Operator, so the name is its
         // override).
@@ -630,5 +773,126 @@ mod tests {
         // id stripping is the profile's job now (see iter-region-drivers).
         assert_eq!(date8("2026-04-21T00:00:00.000+02:00"), "20260421");
         assert_eq!(csv("A,B"), "\"A,B\"");
+    }
+
+    /// A minimal NeTEx with one DayType/UicOperatingPeriod/DayTypeAssignment for
+    /// `0083_9` (and one journey on it), parameterized on from/to/bits.
+    fn calendar_doc(from: &str, to: &str, bits: &str) -> String {
+        format!(
+            r#"<PublicationDelivery>
+              <ServiceFrame><lines><Line id="IT:ITI4:Line:10083_pass_0083">
+                <Name>Regionale</Name><ShortName>REG</ShortName><TransportMode>rail</TransportMode>
+              </Line></lines></ServiceFrame>
+              <ServiceCalendarFrame><ServiceCalendar id="IT:ITI4:ServiceCalendar:0083">
+                <dayTypes>
+                  <DayType id="IT:ITI4:DayType:0083_9"><Name>feriale ridotto</Name>
+                    <properties><PropertyOfDay><DaysOfWeek>Monday Tuesday Wednesday Thursday</DaysOfWeek></PropertyOfDay></properties>
+                  </DayType>
+                </dayTypes>
+                <operatingPeriods>
+                  <UicOperatingPeriod id="IT:ITI4:UicOperatingPeriod:0083_9">
+                    <FromDate>{from}T00:00:00.000+02:00</FromDate><ToDate>{to}T23:59:59.000+02:00</ToDate>
+                    <ValidDayBits>{bits}</ValidDayBits>
+                  </UicOperatingPeriod>
+                </operatingPeriods>
+                <dayTypeAssignments>
+                  <DayTypeAssignment order="1" id="IT:ITI4:DayTypeAssignment:0083_9">
+                    <OperatingPeriodRef ref="IT:ITI4:UicOperatingPeriod:0083_9"/>
+                    <DayTypeRef ref="IT:ITI4:DayType:0083_9"/>
+                  </DayTypeAssignment>
+                </dayTypeAssignments>
+              </ServiceCalendar></ServiceCalendarFrame>
+              <TimetableFrame><vehicleJourneys>
+                <ServiceJourney id="IT:ITI4:ServiceJourney:J9_0083">
+                  <dayTypes><DayTypeRef ref="IT:ITI4:DayType:0083_9"/></dayTypes>
+                  <FlexibleLineView><LineRef ref="IT:ITI4:Line:10083_pass_0083"/></FlexibleLineView>
+                </ServiceJourney>
+              </vehicleJourneys></TimetableFrame>
+            </PublicationDelivery>"#
+        )
+    }
+
+    fn calendar_dates_of(doc: &str) -> (Stats, String, bool) {
+        let profile = netex_profile(DEFAULT_NETEX_PROFILE);
+        let nx = parse(Cursor::new(doc), profile.as_ref()).unwrap();
+        let mut out = Cursor::new(Vec::new());
+        let st = write_gtfs_zip(&nx, profile.as_ref(), &mut out).unwrap();
+        let mut zip = zip::ZipArchive::new(out).unwrap();
+        let mut cal = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("calendar_dates.txt").unwrap(), &mut cal)
+            .unwrap();
+        let mut trips = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("trips.txt").unwrap(), &mut trips).unwrap();
+        let has_trip = trips.contains("J9_0083");
+        (st, cal, has_trip)
+    }
+
+    #[test]
+    fn valid_day_bits_excludes_a_weekday_holiday() {
+        // 0083_9: DaysOfWeek is Mon-Thu, but bits exclude Fri Apr 24 *and* the
+        // weekend — bits are authoritative, DaysOfWeek-over-a-span isn't.
+        let (st, cal, has_trip) =
+            calendar_dates_of(&calendar_doc("2026-04-21", "2026-04-28", "11100011"));
+        assert!(has_trip);
+        assert_eq!(st.services, 1);
+        let rows: Vec<&str> = cal.lines().filter(|l| l.starts_with("0083_9,")).collect();
+        assert_eq!(
+            rows,
+            vec![
+                "0083_9,20260421,1",
+                "0083_9,20260422,1",
+                "0083_9,20260423,1",
+                "0083_9,20260427,1",
+                "0083_9,20260428,1",
+            ]
+        );
+        // Apr 24 (Fri), 25 (Sat), 26 (Sun) are the 0 bits → no row.
+        for off in ["20260424", "20260425", "20260426"] {
+            assert!(!cal.contains(&format!("0083_9,{off},1")));
+        }
+    }
+
+    #[test]
+    fn single_day_window() {
+        let (st, cal, _) = calendar_dates_of(&calendar_doc("2026-04-21", "2026-04-21", "1"));
+        assert_eq!(st.services, 1);
+        let rows: Vec<&str> = cal.lines().filter(|l| l.starts_with("0083_9,")).collect();
+        assert_eq!(rows, vec!["0083_9,20260421,1"]);
+    }
+
+    #[test]
+    fn all_zero_bits_drops_the_service_and_its_trips() {
+        // No bit set (equivalently isAvailable=false for every day): the service
+        // has zero dates, so it emits no rows and its trip is dropped.
+        let (st, cal, has_trip) =
+            calendar_dates_of(&calendar_doc("2026-04-21", "2026-04-28", "00000000"));
+        assert_eq!(st.services, 0);
+        assert!(!cal.contains("0083_9"));
+        assert!(!has_trip);
+    }
+
+    #[test]
+    fn day_arithmetic_round_trips() {
+        // Hinnant's algorithm: epoch, month/year boundaries, leap day.
+        assert_eq!(days_from_ymd("19700101"), Some(0));
+        assert_eq!(ymd_from_days(0), "19700101");
+        assert_eq!(
+            ymd_from_days(days_from_ymd("20260428").unwrap()),
+            "20260428"
+        );
+        // Apr 21 + 6 days = Apr 27 (crosses no month boundary here).
+        assert_eq!(
+            ymd_from_days(days_from_ymd("20260421").unwrap() + 6),
+            "20260427"
+        );
+        // Crossing a month boundary and a leap day.
+        assert_eq!(
+            ymd_from_days(days_from_ymd("20240228").unwrap() + 1),
+            "20240229"
+        );
+        assert_eq!(
+            ymd_from_days(days_from_ymd("20260131").unwrap() + 1),
+            "20260201"
+        );
     }
 }

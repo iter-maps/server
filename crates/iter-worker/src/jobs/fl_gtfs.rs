@@ -172,7 +172,8 @@ mod tests {
 
         let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
         assert!(zip.by_name("stop_times.txt").is_ok());
-        assert!(zip.by_name("calendar.txt").is_ok());
+        assert!(zip.by_name("calendar_dates.txt").is_ok());
+        assert!(zip.by_name("calendar.txt").is_err());
     }
 
     #[test]
@@ -195,7 +196,11 @@ mod tests {
           <StopPointInJourneyPattern order="2" id="IT:ITI4:StopPointInJourneyPattern:P_1_0083"><ScheduledStopPointRef ref="IT:ITI4:ScheduledStopPoint:B_0083"/></StopPointInJourneyPattern>
         </pointsInSequence></ServiceJourneyPattern></journeyPatterns>
       </ServiceFrame>
-      <ServiceCalendarFrame><dayTypes><DayType id="IT:ITI4:DayType:0083_1"><properties><PropertyOfDay><DaysOfWeek>Monday Tuesday Wednesday Thursday Friday</DaysOfWeek></PropertyOfDay></properties></DayType></dayTypes></ServiceCalendarFrame>
+      <ServiceCalendarFrame><ServiceCalendar id="IT:ITI4:ServiceCalendar:0083">
+        <dayTypes><DayType id="IT:ITI4:DayType:0083_1"><properties><PropertyOfDay><DaysOfWeek>Monday Tuesday Wednesday Thursday Friday</DaysOfWeek></PropertyOfDay></properties></DayType></dayTypes>
+        <operatingPeriods><UicOperatingPeriod id="IT:ITI4:UicOperatingPeriod:0083_1"><FromDate>2026-04-21T00:00:00.000+02:00</FromDate><ToDate>2026-04-28T23:59:59.000+02:00</ToDate><ValidDayBits>11110011</ValidDayBits></UicOperatingPeriod></operatingPeriods>
+        <dayTypeAssignments><DayTypeAssignment order="1" id="IT:ITI4:DayTypeAssignment:0083_1"><OperatingPeriodRef ref="IT:ITI4:UicOperatingPeriod:0083_1"/><DayTypeRef ref="IT:ITI4:DayType:0083_1"/></DayTypeAssignment></dayTypeAssignments>
+      </ServiceCalendar></ServiceCalendarFrame>
       <TimetableFrame><vehicleJourneys><ServiceJourney id="IT:ITI4:ServiceJourney:J1_0083">
         <ValidBetween><FromDate>2026-04-21T00:00:00.000+02:00</FromDate><ToDate>2026-04-28T23:59:59.000+02:00</ToDate></ValidBetween>
         <Name>Roma - Cassino</Name>

@@ -56,8 +56,9 @@ flagged per item.
   NeTEx (quick-xml over gunzip) into a routable GTFS the OTP graph build consumes;
   proven on the real ~58 MB CCISS dataset (450 stops / 5 routes / 1,594 trips /
   20,617 stop_times, zero loss). Auto-downloads from the Italian NAP (CCISS)
-  public endpoint each run. **Remaining:** `UicOperatingPeriod` →
-  `calendar_dates` exceptions and `shapes.txt` stitching from OSM rail.
+  public endpoint each run. The `UicOperatingPeriod`/`ValidDayBits` are now
+  expanded via `DayTypeAssignment` into exact `calendar_dates` (calendar_dates-
+  only). **Remaining:** `shapes.txt` stitching from OSM rail.
   Design: concept doc 11 — gateway-and-external-providers · Decision: ADR 0016.
 
 ## 2. Remaining Rust capabilities
