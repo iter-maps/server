@@ -1,93 +1,88 @@
 # Region decoupling (ADR 0017)
 
 Making the core actually live up to "region-generic" by moving the Italy/Rome
-specifics out of generic-named modules — into `region.toml` data where they're
-just parameters, or into `regions::<country>` driver modules where they need
-real code. Source: the leakage audit of the three core crates (2026-06-28); the
-leakage is concentrated, most of it config-drivable.
+specifics out of generic-named modules — into `regions::<country>[::<city>]`
+driver modules where they need real code, and into `region.toml` data where
+they're just parameters.
 
-Each migration is **generic-first, stays green, and is re-proven on the real
-Rome/Lazio data**. `S`/`M`/`L` = rough effort.
+`S`/`M`/`L` = rough effort.
 
-## Done
+## Done — all region-specific *code* is isolated into drivers
 
-- **Italian address normalizer → `regions::italy::address` driver** behind the
-  generic `AddressNormalizer` trait, selected by region country
-  (`bab96fd`). Establishes the `regions::<country>` structure the rest follows.
+The generic core (steps, jobs, handlers) no longer contains Italy/Rome *logic*;
+it dispatches through a trait to the driver for the resolved region's country.
+Verified: the only region tokens left in generic code are test fixtures and two
+hardcoded default URLs (listed below).
 
-## Tier 1 — config-drivable (push to `region.toml`, algorithm stays generic)
+- **Address normalizer** → `regions::italy::address` (`AddressNormalizer` trait),
+  selected by region country. `bab96fd`
+- **ViaggiaTreno live-trains** → `regions::italy::live_trains`
+  (`LiveTrainsProvider` trait); the axum handlers + TTL single-flight stay generic
+  in `live_trains.rs`. Unknown country → an inert stub. `9268be9`
+- **Rome/ATAC overlay** → `regions::italy::rome` (`TransitOverlayDriver` trait);
+  the geometry algorithm stays generic in `steps/overlay.rs` and dispatches
+  through it. No driver → overlays skipped. `12883cf`
+- **NeTEx-IT id scheme + Trenitalia agency** → `regions::italy::netex`
+  (`NetexProfile` trait); the quick-xml parser + `write_gtfs_zip` stay reusable.
+  `11d105b`
 
-### Pipeline · `steps/overlay.rs` (the one heavy leak in the crate)
+Adding another country's equivalent now means writing a `regions::<country>`
+driver and registering it in the selector — no edits to the generic core.
 
-The metro/transit overlay generator hardcodes ATAC/Rome throughout. Push the
-data to `[[overlays]]`; keep the geometry algorithm generic:
+## Remaining — the config-drive pass (move data into `region.toml`)
 
-- operator filter `"ATAC"` → an `operator` (or `operators`) field. `S`
-- metro line set `{A,B,C}` → use the existing-but-ignored `overlays.lines` (or a
-  `metro_lines` set); a route is "metro" iff its ref is in that set. `M`
-- per-line colours (A `#E27439`, B/B1 `#0570B5`, C `#008456`) → an
-  `[overlays.colors]` ref→hex table + a configurable default. `S`
-- `ME{line}` / `ATAC:` id conventions → derive the prefix from the overlay's feed
-  (`Feed.id`), not literals. `M`
-- central-Rome planar origin (`12.5, 41.9, M_LON=82_800`) → derive from the
-  region extent centroid (`M_LON = 111_320·cos(lat)`). `S`
-- `ATAC.gtfs.zip` filename → `<feed.id>.gtfs.zip`. `S`
-- B1 / Jonio–Conca branch split → `[[overlays.branch_split]] line="B"
-  branch="B1" termini=["jonio","conca"]` (simple enough for config; no driver
-  needed). `M`
+ADR 0017 tier 1: the algorithms are generic and the specifics are isolated, but
+several specifics are still *constants in code* (now inside the drivers) or
+*hardcoded defaults*. Pushing them into `region.toml` means adding a *similar*
+region (another Italian city, another GTFS network) needs no recompile at all.
+Most of this needs new `iter-region` schema fields, so it's grouped here.
 
-### Pipeline · other
+### Two hardcoded default URLs still in generic worker code (the last real leaks)
 
-- `steps/civici.rs` `country_code 'it'` → region `geocoding.country_codes` (add a
-  `Context::country_code()`). `S`
-- `steps/osm.rs` default URL (`italy/centro`) → `region.toml [osm] source_url`
-  (env override stays). `S`
-- `context.rs` `ITER_REGION` default `italy/lazio/rome` → a deploy `.env` default,
-  not a code literal. `S`
+These remain because the worker doesn't yet resolve its region (see the keystone
+below); until it does, they sit as env-overridable defaults in generic code:
 
-### Worker · derive jobs from the region's feeds (the keystone)
+- `jobs/rt_reliability.rs` — the ATAC `romamobilita.it` trip-updates URL. `M`
+- `main.rs` — the CCISS NAP NeTEx URL (Asset 663391). `S`
 
-- `main.rs` static two-job vec → build the job set from the resolved region: one
-  NeTEx→GTFS job per `source="netex"` feed, one RT-reliability job per feed with
-  a `realtime=["trip-updates"]` channel. Non-Italy deployments then get the right
-  jobs automatically. `L`
-- NAP NeTEx URL (CCISS Asset 663391) → the FL `[[feeds]]` entry `url`. `S`
-- netex/out file paths (`trenitalia-fl…`, `TRENITALIA-FL.gtfs.zip`) → derived
-  from `<feed.id>`. `S`
-- `jobs/rt_reliability.rs` ATAC trip-updates URL → the ATAC `[[feeds]]` realtime
-  URL; one job per RT feed. `M`
-- `netex.rs` synthesized agency block (Trenitalia / trenitalia.com / Europe/Rome
-  / it / FL) → feed + region fields (add a region `timezone`). `M`
+### Worker jobs from feeds (keystone — unlocks the two above)
 
-### Gateway · config defaults
+- `main.rs` static job vec → derive the job set from the resolved region's feeds:
+  one NeTEx→GTFS job per `source="netex"` feed, one RT job per feed with a
+  `realtime=["trip-updates"]` channel. Then the URLs above come from the feed
+  entries, and a non-Italy deployment gets the right jobs automatically. `L`
 
-- `config.rs` `region_code.unwrap_or(5)` → drop the Lazio `5` fallback; rename
-  `trenitalia_region` to a provider-neutral name. `S`
-- `config.rs` `viaggiatreno_url` default → the viaggiatreno driver / `[live_trains]
-  base_url`. `S`
-- `config.rs` `ITER_REGION` default `italy/lazio/rome` → deploy `.env`. `S`
-- `enrich.rs` `lang = "it"` default → first token of region `geocoding.languages`.
+### Driver constants that could become `region.toml` data
+
+The drivers hold these as constants today (isolated, but not yet no-recompile):
+
+- overlay (`regions::italy::rome`): operator, metro line set, colours, the
+  branch-split rule, the projection origin → `[[overlays]]` data. `M`
+- netex (`regions::italy::netex`): the agency block + the profile id → feed /
+  region fields (add a region `timezone`). `M`
+- live-trains: base URL + region code are already env-overridable; the defaults
+  live in the driver. `S`
+
+### Small generic defaults
+
+- `steps/civici.rs` `country_code 'it'` → region `geocoding.country_codes`. `S`
+- `steps/osm.rs` default URL (`italy/centro`) → `region.toml [osm] source_url`. `S`
+- `context.rs` / gateway `ITER_REGION` default `italy/lazio/rome` → deploy `.env`.
   `S`
+- gateway `enrich.rs` `lang = "it"` default → first token of region
+  `geocoding.languages`. `S`
 
-## Tier 2 — driver modules (`regions::<country>`, selected by a TOML id)
+## Verification still owed
 
-- **ViaggiaTreno live-trains** — `trenitalia.rs` is a whole ViaggiaTreno/RFI
-  provider (IT JSON field names, endpoint segments, `S\d+` station ids,
-  `Europe/Rome` + CET/CEST date param, the viaggiatreno.it referer). Move to
-  `regions::italy::live_trains::viaggiatreno` behind a `LiveTrainsProvider` trait,
-  selected by `[live_trains] provider = "viaggiatreno"` (the field already exists
-  on the profile, unused today). Serve the generic `/live-trains/*` (keep
-  `/trenitalia/*` as an alias). `L`
-- **NeTEx IT id scheme** — `netex.rs` `gid()` strips the `IT:ITI4:` codespace;
-  other countries' NeTEx use a different prefix shape. Move to
-  `regions::italy::netex` as a `NetexIdScheme`, selected by a per-feed
-  `netex_profile = "it-iti4"`; the generic `parse`/`write_gtfs_zip` stay in core.
-  `M`
+A real-clip overlay GeoJSON re-render to confirm byte-identical output (the proof
+inputs were cleaned). Low risk — the overlay refactor is a pure relocation of
+constants + logic behind a trait, and the unit suite locks the Rome specifics
+(B1 split, colours, projection, GTFS keys) — but worth running when the pipeline
+next builds the Rome clip.
 
 ## Keep generic / shared-contract (no change)
 
 Overture schemas (addresses/places), Photon import, osmium clips, the GTFS-RT
 protobuf DTO, the gateway proxy/manifest/offline/styles (already region-driven via
 `region.id` + `cfg`). The `itermaps:civico` Photon `object_type` is a cross-tier
-contract token shared with the gateway — keep it stable (candidate to hoist into
-`iter-contracts`).
+contract token — keep it stable (candidate to hoist into `iter-contracts`).
