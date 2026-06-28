@@ -149,7 +149,7 @@ data-heavy backend:
   irreplaceable (P7); "delete and rebuild" is always valid. On one host the
   artifact tree is a shared mount; on a fleet it is baked into versioned images.
 
-This is why the same code runs as a single `podman compose` stack **and** scales
+This is why the same code runs as a single compose stack (`docker/compose.yaml`) **and** scales
 to Kubernetes replicas + a worker tier: statelessness + externalized state +
 graceful drain + readiness gating are designed in, not bolted on.
 

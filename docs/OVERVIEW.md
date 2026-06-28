@@ -48,7 +48,7 @@ NeTEx; one folder per country).
 The split follows the build/serve asymmetry: the stateless edge scales **wide**
 (replicas), the data-heavy engines stay **narrow**, and the heavy one-shot builds
 run in the pipeline tier. Services are stateless with externalized, regenerable
-artifacts — so the same code runs as a single `podman compose` stack and scales
+artifacts — so the same code runs as a single compose stack (`docker/compose.yaml`) and scales
 to Kubernetes replicas + workers.
 
 ## Status

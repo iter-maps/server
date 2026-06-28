@@ -20,9 +20,9 @@ path = [
   ".dockerignore",
   "docker/**",
   ".github/**",
-  "deny.toml",
-  "_typos.toml",
-  ".hadolint.yaml",
+  ".config/deny.toml",
+  ".config/_typos.toml",
+  ".config/.hadolint.yaml",
 ]
 SPDX-FileCopyrightText = "Iter Maps contributors"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
