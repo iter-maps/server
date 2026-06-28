@@ -10,9 +10,9 @@
 
 ---
 
-The backend powering **Iter Maps** — a public-transport journey-planning and maps
-platform for Europe. It turns open data into journey planning, search, maps, and
-live transit, served to the Iter Maps app. Open-source.
+The backend that powers the app — public-transport journey planning and maps for
+Europe. It turns open data into routing, search, live transit, and the map.
+Open-source.
 
 **Documentation** — [overview](docs/OVERVIEW.md) · [architecture](docs/ARCHITECTURE.md) · [development](docs/DEVELOPMENT.md) · [decisions](docs/adr/README.md) · [roadmap](ROADMAP.md)
 
