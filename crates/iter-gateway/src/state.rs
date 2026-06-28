@@ -6,6 +6,7 @@ use iter_contracts::places::Place;
 use crate::cache::TtlCache;
 use crate::config::GatewayConfig;
 use crate::correlate::CorrelationIndex;
+use crate::regions::LiveTrainsProvider;
 
 /// Shared, cheaply-cloneable handle for axum handlers. The gateway is
 /// stateless across requests (the caches below are derived, disposable upstream
@@ -26,6 +27,9 @@ pub struct AppState {
     pub offline_gate: Arc<tokio::sync::Semaphore>,
     /// Build-time addressed-POI index for place correlation (loaded once).
     pub correlations: Arc<CorrelationIndex>,
+    /// Country-specific live-trains provider, selected from the resolved region's
+    /// country (ADR 0017). The generic handlers dispatch through it.
+    pub live_trains: Arc<dyn LiveTrainsProvider>,
 }
 
 impl AppState {
@@ -44,6 +48,14 @@ impl AppState {
             country = %cfg.region_country,
             "loaded place correlation index"
         );
+        // The live-trains upstream is country-specific; pick the provider for the
+        // resolved region's country and hand it the env-supplied base URL/region
+        // (it owns the defaults for both) — same pattern as the normalizer above.
+        let live_trains = crate::regions::live_trains_provider(
+            &cfg.region_country,
+            cfg.viaggiatreno_url.clone(),
+            cfg.trenitalia_region,
+        );
         Ok(Self {
             cfg: Arc::new(cfg),
             http,
@@ -52,6 +64,7 @@ impl AppState {
             places: Arc::new(TtlCache::new()),
             offline_gate,
             correlations,
+            live_trains,
         })
     }
 }

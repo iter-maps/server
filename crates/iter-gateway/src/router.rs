@@ -5,8 +5,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
 use crate::{
-    correlate, enrich, glyphs, health, manifest, offline, overlays, proxy, sprite, styles, tiles,
-    trenitalia,
+    correlate, enrich, glyphs, health, live_trains, manifest, offline, overlays, proxy, sprite,
+    styles, tiles,
 };
 
 /// Assemble the gateway router. Capability modules (tiles, styles, overlays,
@@ -31,14 +31,14 @@ pub fn build(state: AppState) -> Router {
         .route("/places/enrich", get(enrich::enrich))
         .route("/places/image", get(enrich::image))
         .route("/places/related", get(correlate::related_places))
-        // live-trains (ViaggiaTreno proxy)
+        // live-trains: generic handlers over the region's provider (ADR 0017)
         .route(
             "/trenitalia/stations/search",
-            get(trenitalia::stations_search),
+            get(live_trains::stations_search),
         )
-        .route("/trenitalia/stations", get(trenitalia::stations_list))
-        .route("/trenitalia/departures", get(trenitalia::departures))
-        .route("/trenitalia/arrivals", get(trenitalia::arrivals))
+        .route("/trenitalia/stations", get(live_trains::stations_list))
+        .route("/trenitalia/departures", get(live_trains::departures))
+        .route("/trenitalia/arrivals", get(live_trains::arrivals))
         .route("/offline/extract", get(offline::extract))
         .route("/offline/bundle", get(offline::bundle))
         .merge(tiles::router(&state))

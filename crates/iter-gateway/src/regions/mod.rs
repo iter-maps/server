@@ -9,6 +9,97 @@ pub mod italy;
 
 use std::sync::Arc;
 
+use iter_contracts::live_trains::{BoardEntry, Station};
+use iter_core::ApiError;
+
+/// Which board a live-trains query asks for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BoardKind {
+    Departures,
+    Arrivals,
+}
+
+/// Country-specific live-train provider (ADR 0017): the upstream API's endpoint
+/// shapes, field names, station-id format and date param are all country/operator
+/// specific, so the generic handlers dispatch through this trait to the driver
+/// for the deployment's country. The TTL cache + single-flight + axum handlers
+/// stay generic in the core; only the upstream client lives here.
+///
+/// The driver owns its own upstream base URL and any region fallback — those
+/// literals never leak into the generic config or handlers.
+#[async_trait::async_trait]
+pub trait LiveTrainsProvider: Send + Sync {
+    /// Autocomplete stations by free-text `query`. Drivers validate `query`
+    /// themselves; the handler only enforces the generic min-length guard.
+    async fn search(&self, http: &reqwest::Client, query: &str) -> Result<Vec<Station>, ApiError>;
+
+    /// The full station list for a region. `region_code` is the caller-supplied
+    /// override; `None` means "use the driver's default region".
+    async fn list(
+        &self,
+        http: &reqwest::Client,
+        region_code: Option<i64>,
+    ) -> Result<Vec<Station>, ApiError>;
+
+    /// A departures/arrivals board for `station`. Returns a validation
+    /// [`ApiError`] (400) when `station` is not a valid id for this provider.
+    async fn board(
+        &self,
+        http: &reqwest::Client,
+        station: &str,
+        kind: BoardKind,
+    ) -> Result<Vec<BoardEntry>, ApiError>;
+}
+
+/// Select the live-trains provider for a region's country. The optional
+/// `base_url`/`region_code` are passed to the chosen driver (the upstream
+/// endpoint override and the default station-list region); each driver owns its
+/// own fallbacks for them. Unknown countries get a stub that returns empty
+/// results — the surface stays wired but inert, exactly like
+/// [`GenericNormalizer`] for address correlation.
+pub fn live_trains_provider(
+    country: &str,
+    base_url: Option<String>,
+    region_code: Option<i64>,
+) -> Arc<dyn LiveTrainsProvider> {
+    match country {
+        "italy" => Arc::new(italy::live_trains::ViaggiaTreno::new(base_url, region_code)),
+        _ => Arc::new(NoLiveTrains),
+    }
+}
+
+/// Fallback live-trains provider for countries with no driver: empty boards and
+/// station lists, never an upstream call.
+pub struct NoLiveTrains;
+
+#[async_trait::async_trait]
+impl LiveTrainsProvider for NoLiveTrains {
+    async fn search(
+        &self,
+        _http: &reqwest::Client,
+        _query: &str,
+    ) -> Result<Vec<Station>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    async fn list(
+        &self,
+        _http: &reqwest::Client,
+        _region_code: Option<i64>,
+    ) -> Result<Vec<Station>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    async fn board(
+        &self,
+        _http: &reqwest::Client,
+        _station: &str,
+        _kind: BoardKind,
+    ) -> Result<Vec<BoardEntry>, ApiError> {
+        Ok(Vec::new())
+    }
+}
+
 /// Country-specific address normalization for the place-correlation bucket key
 /// (street-type expansion, house-number/esponente rules, …). The bucket key is
 /// the join: two records share an address iff their keys match (ADR 0012).

@@ -1,164 +1,124 @@
-//! Live-train boards (`/trenitalia/*`): a normalized, TTL-cached,
-//! single-flighted proxy over RFI's unofficial ViaggiaTreno API. The client
-//! never touches the flaky cleartext upstream directly.
+//! Italy live-trains driver: a client over RFI's unofficial ViaggiaTreno API,
+//! behind the generic [`LiveTrainsProvider`] trait (ADR 0017). Everything
+//! Italy/RFI-specific lives here — the `cercaStazione`/`elencoStazioni`/
+//! `partenze`/`arrivi` endpoint segments, the Italian JSON field names, the
+//! `S\d+` station-id format, the `Date.toString()` CET/CEST date param, and the
+//! viaggiatreno.it base URL + referer. The generic core only knows the trait.
 //!
 //! Verified end-to-end against the live API (2026-06-28): the upstream field
 //! names below and the `Date.toString()` date-param are confirmed — station
 //! search, the regional station list (with lat/lon), and the arrivals/departures
-//! boards all return correctly-normalized real data. Validation, caching,
-//! normalization, and the date-param are also unit-tested here.
+//! boards all return correctly-normalized real data. Validation, normalization,
+//! and the date-param are also unit-tested here.
 
-use std::time::Duration;
-
-use axum::Json;
-use axum::extract::{Query, State};
-use axum::http::{HeaderValue, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::header;
 use iter_contracts::live_trains::{BoardEntry, Station};
 use iter_core::ApiError;
-use serde::Deserialize;
 use serde_json::Value;
 
-use crate::http::{ApiErr, ApiResult};
-use crate::state::AppState;
+use crate::regions::{BoardKind, LiveTrainsProvider};
 
-const SEARCH_TTL: Duration = Duration::from_secs(60 * 60);
-const LIST_TTL: Duration = Duration::from_secs(12 * 60 * 60);
-const BOARD_TTL: Duration = Duration::from_secs(30);
-
-#[derive(Copy, Clone)]
-enum BoardKind {
-    Departures,
-    Arrivals,
+/// RFI's unofficial ViaggiaTreno API (cleartext, flaky — the generic TTL cache +
+/// single-flight in the core shield it). The base URL is overridable for tests;
+/// the default is the public endpoint. The default region (Lazio = `5`) is used
+/// for the station list when the caller supplies none.
+pub struct ViaggiaTreno {
+    base_url: String,
+    default_region: i64,
 }
 
-#[derive(Deserialize)]
-pub struct SearchQuery {
-    q: Option<String>,
+/// ViaggiaTreno's public base and Lazio's region code — the Italy-specific
+/// defaults that used to sit in the generic config.
+const DEFAULT_BASE_URL: &str = "http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno";
+const DEFAULT_REGION: i64 = 5;
+
+impl Default for ViaggiaTreno {
+    fn default() -> Self {
+        Self {
+            base_url: DEFAULT_BASE_URL.to_string(),
+            default_region: DEFAULT_REGION,
+        }
+    }
 }
 
-#[derive(Deserialize)]
-pub struct ListQuery {
-    region: Option<i64>,
+impl ViaggiaTreno {
+    /// Build a provider against a specific base URL (env override / tests),
+    /// falling back to the public endpoint when `base_url` is empty, and to
+    /// Lazio when `region_code` is `None`.
+    pub fn new(base_url: Option<String>, region_code: Option<i64>) -> Self {
+        Self {
+            base_url: base_url
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            default_region: region_code.unwrap_or(DEFAULT_REGION),
+        }
+    }
 }
 
-#[derive(Deserialize)]
-pub struct BoardQuery {
-    station: Option<String>,
-}
-
-pub async fn stations_search(
-    State(state): State<AppState>,
-    Query(query): Query<SearchQuery>,
-) -> ApiResult<Response> {
-    let term = query.q.unwrap_or_default().trim().to_string();
-    if term.chars().count() < 2 {
-        return Err(ApiError::bad_request("q must be at least 2 characters").into());
+#[async_trait::async_trait]
+impl LiveTrainsProvider for ViaggiaTreno {
+    async fn search(&self, http: &reqwest::Client, query: &str) -> Result<Vec<Station>, ApiError> {
+        let url = format!("{}/cercaStazione/{}", self.base_url, pct(query));
+        let v = self.fetch_json(http, &url).await?;
+        Ok(normalize_search(&v))
     }
 
-    let url = format!(
-        "{}/cercaStazione/{}",
-        state.cfg.viaggiatreno_url,
-        pct(&term)
-    );
-    let key = format!("search:{}", term.to_lowercase());
-    let result = state
-        .stations
-        .get_or_fetch(&key, SEARCH_TTL, || async {
-            fetch_json(&state, &url).await.map(|v| normalize_search(&v))
+    async fn list(
+        &self,
+        http: &reqwest::Client,
+        region_code: Option<i64>,
+    ) -> Result<Vec<Station>, ApiError> {
+        let region = region_code.unwrap_or(self.default_region);
+        let url = format!("{}/elencoStazioni/{}", self.base_url, region);
+        let v = self.fetch_json(http, &url).await?;
+        Ok(normalize_list(&v))
+    }
+
+    async fn board(
+        &self,
+        http: &reqwest::Client,
+        station: &str,
+        kind: BoardKind,
+    ) -> Result<Vec<BoardEntry>, ApiError> {
+        if !is_station_id(station) {
+            return Err(ApiError::bad_request("station must match ^S\\d+$"));
+        }
+        let zoned = rome_now()?;
+        let date = date_param(&zoned);
+        let segment = match kind {
+            BoardKind::Departures => "partenze",
+            BoardKind::Arrivals => "arrivi",
+        };
+        let url = format!("{}/{}/{}/{}", self.base_url, segment, station, pct(&date));
+        let v = self.fetch_json(http, &url).await?;
+        Ok(normalize_board(&v, kind))
+    }
+}
+
+impl ViaggiaTreno {
+    async fn fetch_json(&self, http: &reqwest::Client, url: &str) -> Result<Value, ApiError> {
+        let resp = http
+            .get(url)
+            .header(header::REFERER, "http://www.viaggiatreno.it/")
+            .send()
+            .await
+            .map_err(|_| upstream_down())?;
+        if !resp.status().is_success() {
+            return Err(upstream_down());
+        }
+        // ViaggiaTreno legitimately returns empty bodies (e.g. boards at night).
+        let text = resp.text().await.map_err(|_| upstream_down())?;
+        if text.trim().is_empty() {
+            return Ok(Value::Array(Vec::new()));
+        }
+        serde_json::from_str(&text).map_err(|_| {
+            ApiError::new(
+                502,
+                iter_core::code::UPSTREAM_ERROR,
+                "ViaggiaTreno bad payload",
+            )
         })
-        .await?;
-    Ok(cached(Json(result), 600))
-}
-
-pub async fn stations_list(
-    State(state): State<AppState>,
-    Query(query): Query<ListQuery>,
-) -> ApiResult<Response> {
-    let region = query.region.unwrap_or(state.cfg.trenitalia_region);
-    let url = format!("{}/elencoStazioni/{}", state.cfg.viaggiatreno_url, region);
-    let key = format!("list:{region}");
-    let result = state
-        .stations
-        .get_or_fetch(&key, LIST_TTL, || async {
-            fetch_json(&state, &url).await.map(|v| normalize_list(&v))
-        })
-        .await?;
-    Ok(cached(Json(result), 3600))
-}
-
-pub async fn departures(
-    State(state): State<AppState>,
-    Query(query): Query<BoardQuery>,
-) -> ApiResult<Response> {
-    board(state, query.station, BoardKind::Departures).await
-}
-
-pub async fn arrivals(
-    State(state): State<AppState>,
-    Query(query): Query<BoardQuery>,
-) -> ApiResult<Response> {
-    board(state, query.station, BoardKind::Arrivals).await
-}
-
-async fn board(state: AppState, station: Option<String>, kind: BoardKind) -> ApiResult<Response> {
-    let station = station.unwrap_or_default();
-    if !is_station_id(&station) {
-        return Err(ApiError::bad_request("station must match ^S\\d+$").into());
     }
-
-    let zoned = rome_now()?;
-    let date_param = date_param(&zoned);
-    // The cache key buckets per minute; within a minute, callers coalesce onto
-    // one upstream fetch.
-    let bucket = zoned.strftime("%Y%m%d%H%M").to_string();
-    let (segment, prefix) = match kind {
-        BoardKind::Departures => ("partenze", "dep"),
-        BoardKind::Arrivals => ("arrivi", "arr"),
-    };
-    let url = format!(
-        "{}/{}/{}/{}",
-        state.cfg.viaggiatreno_url,
-        segment,
-        station,
-        pct(&date_param)
-    );
-    let key = format!("{prefix}:{station}:{bucket}");
-    let result = state
-        .boards
-        .get_or_fetch(&key, BOARD_TTL, || async {
-            fetch_json(&state, &url)
-                .await
-                .map(|v| normalize_board(&v, kind))
-        })
-        .await?;
-    Ok(cached(Json(result), 20))
-}
-
-async fn fetch_json(state: &AppState, url: &str) -> Result<Value, ApiErr> {
-    let resp = state
-        .http
-        .get(url)
-        .header(header::REFERER, "http://www.viaggiatreno.it/")
-        .send()
-        .await
-        .map_err(|_| upstream_down())?;
-    if !resp.status().is_success() {
-        return Err(upstream_down().into());
-    }
-    // ViaggiaTreno legitimately returns empty bodies (e.g. boards at night).
-    let text = resp.text().await.map_err(|_| upstream_down())?;
-    if text.trim().is_empty() {
-        return Ok(Value::Array(Vec::new()));
-    }
-    serde_json::from_str(&text).map_err(|_| {
-        ApiError::new(
-            502,
-            iter_core::code::UPSTREAM_ERROR,
-            "ViaggiaTreno bad payload",
-        )
-        .into()
-    })
 }
 
 fn upstream_down() -> ApiError {
@@ -169,14 +129,7 @@ fn upstream_down() -> ApiError {
     )
 }
 
-fn cached(body: impl IntoResponse, max_age: u32) -> Response {
-    let mut resp = body.into_response();
-    let value = HeaderValue::from_str(&format!("public, max-age={max_age}")).unwrap();
-    resp.headers_mut().insert(header::CACHE_CONTROL, value);
-    resp
-}
-
-fn rome_now() -> Result<jiff::Zoned, ApiErr> {
+fn rome_now() -> Result<jiff::Zoned, ApiError> {
     let tz = jiff::tz::TimeZone::get("Europe/Rome")
         .map_err(|_| ApiError::internal("Europe/Rome timezone unavailable"))?;
     Ok(jiff::Timestamp::now().to_zoned(tz))
@@ -364,6 +317,21 @@ mod tests {
         let w = date_param(&winter.to_zoned(tz));
         assert!(w.contains("GMT+0100"), "{w}");
         assert!(w.contains("(Central European Standard Time)"), "{w}");
+    }
+
+    #[test]
+    fn default_provider_uses_public_base_and_lazio() {
+        let p = ViaggiaTreno::default();
+        assert_eq!(p.base_url, DEFAULT_BASE_URL);
+        assert_eq!(p.default_region, 5);
+        // Empty/None inputs fall back to the same defaults.
+        let p2 = ViaggiaTreno::new(Some(String::new()), None);
+        assert_eq!(p2.base_url, DEFAULT_BASE_URL);
+        assert_eq!(p2.default_region, 5);
+        // Explicit overrides win.
+        let p3 = ViaggiaTreno::new(Some("http://example.test".to_string()), Some(8));
+        assert_eq!(p3.base_url, "http://example.test");
+        assert_eq!(p3.default_region, 8);
     }
 
     #[test]

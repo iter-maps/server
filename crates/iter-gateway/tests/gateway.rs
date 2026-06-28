@@ -20,8 +20,8 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
         // Dead ports: proxy calls fail fast with connection-refused.
         otp_url: "http://127.0.0.1:1".to_string(),
         photon_url: "http://127.0.0.1:1".to_string(),
-        viaggiatreno_url: "http://127.0.0.1:1".to_string(),
-        trenitalia_region: 5,
+        viaggiatreno_url: Some("http://127.0.0.1:1".to_string()),
+        trenitalia_region: Some(5),
         upstream_timeout: Duration::from_secs(2),
         version: "0.0.0-test".to_string(),
         tiles_dir: data_dir.join("output/tiles"),

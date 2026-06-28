@@ -14,10 +14,13 @@ pub struct GatewayConfig {
     pub otp_url: String,
     /// Internal URL of the Photon geocoder.
     pub photon_url: String,
-    /// ViaggiaTreno base (RFI's unofficial live-train API).
-    pub viaggiatreno_url: String,
-    /// Default ViaggiaTreno region code for the station list (Lazio = 5).
-    pub trenitalia_region: i64,
+    /// Optional override for the live-trains upstream base URL. `None` lets the
+    /// country's provider use its own default (ADR 0017 — the literal lives in
+    /// the driver, not here).
+    pub viaggiatreno_url: Option<String>,
+    /// Optional override for the live-trains station-list region code. `None`
+    /// lets the provider fall back to its own default (Italy → Lazio).
+    pub trenitalia_region: Option<i64>,
     /// Upstream request timeout.
     pub upstream_timeout: std::time::Duration,
     /// Reported in the client health document.
@@ -80,15 +83,13 @@ impl GatewayConfig {
             bind: format!("{host}:{port}").parse()?,
             otp_url: config::or("OTP_URL", "http://otp:8080"),
             photon_url: config::or("PHOTON_URL", "http://photon:2322"),
-            viaggiatreno_url: config::or(
-                "VIAGGIATRENO_URL",
-                "http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno",
-            ),
-            // Seed from the region's live-train code; env still overrides.
-            trenitalia_region: config::parse(
-                "TRENITALIA_REGION",
-                region.live_trains.region_code.unwrap_or(5),
-            ),
+            // Env override only; the default upstream base lives in the driver.
+            viaggiatreno_url: config::opt("VIAGGIATRENO_URL"),
+            // Env override wins, else the region's declared code; both may be
+            // absent, in which case the provider supplies its own default.
+            trenitalia_region: config::opt("TRENITALIA_REGION")
+                .and_then(|s| s.parse().ok())
+                .or(region.live_trains.region_code),
             upstream_timeout: std::time::Duration::from_secs(config::parse(
                 "UPSTREAM_TIMEOUT_SECS",
                 30,
