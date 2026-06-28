@@ -31,9 +31,10 @@ use geo::{ConcaveHull, ConvexHull, MultiPoint, Point as GeoPoint};
 use osmpbf::{Element, ElementReader};
 use serde_json::{Value, json};
 
+use iter_region_drivers::{LineKind, Projection, TransitOverlayDriver, overlay_driver};
+
 use crate::context::Context;
 use crate::fsx;
-use crate::regions::{LineKind, Projection, TransitOverlayDriver, overlay_driver};
 use crate::step::Step;
 
 const IMPLEMENTED: &[&str] = &["transit-lines", "metro-stations"];
@@ -806,12 +807,11 @@ fn slug(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::regions::italy::rome::RomeOverlayDriver;
 
     /// The local-planar projection the generic geometry tests run in (Rome's, via
     /// the driver) — the metre math is generic; we just need a concrete origin.
     fn test_proj() -> Projection {
-        RomeOverlayDriver.projection()
+        overlay_driver("italy", "rome").unwrap().projection()
     }
 
     #[test]

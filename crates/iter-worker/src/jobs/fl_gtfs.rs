@@ -14,7 +14,6 @@ use tokio::io::AsyncWriteExt;
 
 use crate::job::Job;
 use crate::netex;
-use crate::regions;
 
 pub struct FlGtfsBuild {
     pub netex_path: PathBuf,
@@ -116,7 +115,7 @@ async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::R
 /// The NeTEx profile id selects the country driver (ADR 0017) for id stripping
 /// and the synthesized agency.
 fn convert_file(netex: &Path, out: &Path, profile_id: &str) -> anyhow::Result<netex::Stats> {
-    let profile = regions::netex_profile(profile_id);
+    let profile = iter_region_drivers::netex_profile(profile_id);
     let file = std::fs::File::open(netex)?;
     let reader: Box<dyn BufRead> = if netex.extension().and_then(|e| e.to_str()) == Some("gz") {
         Box::new(std::io::BufReader::new(flate2::read::GzDecoder::new(file)))
@@ -139,7 +138,7 @@ fn convert_file(netex: &Path, out: &Path, profile_id: &str) -> anyhow::Result<ne
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::regions::DEFAULT_NETEX_PROFILE;
+    use iter_region_drivers::DEFAULT_NETEX_PROFILE;
 
     fn job(netex_path: PathBuf, out_path: PathBuf) -> FlGtfsBuild {
         FlGtfsBuild {

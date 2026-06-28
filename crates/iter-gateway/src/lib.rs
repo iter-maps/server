@@ -14,7 +14,6 @@ pub mod manifest;
 pub mod offline;
 pub mod overlays;
 pub mod proxy;
-pub mod regions;
 pub mod router;
 pub mod sprite;
 pub mod state;

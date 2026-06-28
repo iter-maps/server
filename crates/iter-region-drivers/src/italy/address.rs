@@ -1,7 +1,7 @@
 //! Italian address normalization — the join key for correlating places at the
 //! same civico (ADR 0012). This is the Italy driver behind the generic
-//! [`AddressNormalizer`] trait (ADR 0017): no open geocoder ships "what's at this
-//! address", so we build the index ourselves, and
+//! [`AddressNormalizer`] trait (ADR 0017/0018): no open geocoder ships "what's at
+//! this address", so we build the index ourselves, and
 //! the bucket key must survive the ways Italian addresses vary: street-type
 //! abbreviations (`V.le` = `Viale`), accents, esponenti (`12/A` = `12a`,
 //! `12 bis`), the `snc` ("no number") sentinel, and the Firenze/Genova
@@ -11,7 +11,7 @@
 //! libpostal would be the heavyweight alternative (a ~1.8 GB model); for Italian
 //! streets a focused rule layer is enough and ships in-binary.
 
-use crate::regions::AddressNormalizer;
+use crate::traits::AddressNormalizer;
 
 /// The Italy address-correlation driver. Freeform splitting uses the generic
 /// number-after-street default; bucketing applies the Italian rules below.

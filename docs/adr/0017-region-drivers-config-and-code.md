@@ -3,7 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-06-28
 - **Supersedes:** —
-- **Superseded by:** —
+- **Superseded by:** 0018 (driver *placement* only; the config-vs-driver model and
+  the traits stand)
 
 ## Context
 

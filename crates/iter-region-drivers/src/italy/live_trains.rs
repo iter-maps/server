@@ -1,9 +1,13 @@
 //! Italy live-trains driver: a client over RFI's unofficial ViaggiaTreno API,
-//! behind the generic [`LiveTrainsProvider`] trait (ADR 0017). Everything
+//! behind the generic [`LiveTrainsProvider`] trait (ADR 0017/0018). Everything
 //! Italy/RFI-specific lives here — the `cercaStazione`/`elencoStazioni`/
 //! `partenze`/`arrivi` endpoint segments, the Italian JSON field names, the
 //! `S\d+` station-id format, the `Date.toString()` CET/CEST date param, and the
 //! viaggiatreno.it base URL + referer. The generic core only knows the trait.
+//!
+//! Errors are the neutral [`anyhow::Error`] (ADR 0018): a bad station id, an
+//! unreachable upstream, and a malformed payload all surface as `anyhow`; the
+//! gateway's live-trains handler maps them into its `ApiError`.
 //!
 //! Verified end-to-end against the live API (2026-06-28): the upstream field
 //! names below and the `Date.toString()` date-param are confirmed — station
@@ -11,12 +15,11 @@
 //! boards all return correctly-normalized real data. Validation, normalization,
 //! and the date-param are also unit-tested here.
 
-use axum::http::header;
+use anyhow::{Context, anyhow};
 use iter_contracts::live_trains::{BoardEntry, Station};
-use iter_core::ApiError;
 use serde_json::Value;
 
-use crate::regions::{BoardKind, LiveTrainsProvider};
+use crate::traits::{BoardKind, LiveTrainsProvider};
 
 /// RFI's unofficial ViaggiaTreno API (cleartext, flaky — the generic TTL cache +
 /// single-flight in the core shield it). The base URL is overridable for tests;
@@ -57,7 +60,11 @@ impl ViaggiaTreno {
 
 #[async_trait::async_trait]
 impl LiveTrainsProvider for ViaggiaTreno {
-    async fn search(&self, http: &reqwest::Client, query: &str) -> Result<Vec<Station>, ApiError> {
+    async fn search(
+        &self,
+        http: &reqwest::Client,
+        query: &str,
+    ) -> Result<Vec<Station>, anyhow::Error> {
         let url = format!("{}/cercaStazione/{}", self.base_url, pct(query));
         let v = self.fetch_json(http, &url).await?;
         Ok(normalize_search(&v))
@@ -67,7 +74,7 @@ impl LiveTrainsProvider for ViaggiaTreno {
         &self,
         http: &reqwest::Client,
         region_code: Option<i64>,
-    ) -> Result<Vec<Station>, ApiError> {
+    ) -> Result<Vec<Station>, anyhow::Error> {
         let region = region_code.unwrap_or(self.default_region);
         let url = format!("{}/elencoStazioni/{}", self.base_url, region);
         let v = self.fetch_json(http, &url).await?;
@@ -79,9 +86,9 @@ impl LiveTrainsProvider for ViaggiaTreno {
         http: &reqwest::Client,
         station: &str,
         kind: BoardKind,
-    ) -> Result<Vec<BoardEntry>, ApiError> {
+    ) -> Result<Vec<BoardEntry>, anyhow::Error> {
         if !is_station_id(station) {
-            return Err(ApiError::bad_request("station must match ^S\\d+$"));
+            return Err(anyhow!("station must match ^S\\d+$"));
         }
         let zoned = rome_now()?;
         let date = date_param(&zoned);
@@ -96,42 +103,31 @@ impl LiveTrainsProvider for ViaggiaTreno {
 }
 
 impl ViaggiaTreno {
-    async fn fetch_json(&self, http: &reqwest::Client, url: &str) -> Result<Value, ApiError> {
+    async fn fetch_json(&self, http: &reqwest::Client, url: &str) -> Result<Value, anyhow::Error> {
         let resp = http
             .get(url)
-            .header(header::REFERER, "http://www.viaggiatreno.it/")
+            .header("referer", "http://www.viaggiatreno.it/")
             .send()
             .await
-            .map_err(|_| upstream_down())?;
+            .map_err(|_| anyhow!("ViaggiaTreno is unavailable"))?;
         if !resp.status().is_success() {
-            return Err(upstream_down());
+            return Err(anyhow!("ViaggiaTreno is unavailable"));
         }
         // ViaggiaTreno legitimately returns empty bodies (e.g. boards at night).
-        let text = resp.text().await.map_err(|_| upstream_down())?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|_| anyhow!("ViaggiaTreno is unavailable"))?;
         if text.trim().is_empty() {
             return Ok(Value::Array(Vec::new()));
         }
-        serde_json::from_str(&text).map_err(|_| {
-            ApiError::new(
-                502,
-                iter_core::code::UPSTREAM_ERROR,
-                "ViaggiaTreno bad payload",
-            )
-        })
+        serde_json::from_str(&text).context("ViaggiaTreno bad payload")
     }
 }
 
-fn upstream_down() -> ApiError {
-    ApiError::new(
-        503,
-        iter_core::code::UPSTREAM_UNAVAILABLE,
-        "ViaggiaTreno is unavailable",
-    )
-}
-
-fn rome_now() -> Result<jiff::Zoned, ApiError> {
+fn rome_now() -> Result<jiff::Zoned, anyhow::Error> {
     let tz = jiff::tz::TimeZone::get("Europe/Rome")
-        .map_err(|_| ApiError::internal("Europe/Rome timezone unavailable"))?;
+        .map_err(|_| anyhow!("Europe/Rome timezone unavailable"))?;
     Ok(jiff::Timestamp::now().to_zoned(tz))
 }
 

@@ -4,6 +4,7 @@ members = [
     "crates/iter-core",
     "crates/iter-contracts",
     "crates/iter-region",
+    "crates/iter-region-drivers",
     "crates/iter-gateway",
     "crates/iter-pipeline",
     "crates/iter-worker",
@@ -47,6 +48,7 @@ flate2 = "1"
 iter-core = { path = "crates/iter-core" }
 iter-contracts = { path = "crates/iter-contracts" }
 iter-region = { path = "crates/iter-region" }
+iter-region-drivers = { path = "crates/iter-region-drivers" }
 
 [profile.release]
 opt-level = 3

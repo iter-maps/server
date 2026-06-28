@@ -3,10 +3,11 @@ use std::sync::Arc;
 use iter_contracts::live_trains::{BoardEntry, Station};
 use iter_contracts::places::Place;
 
+use iter_region_drivers::{LiveTrainsProvider, address_normalizer, live_trains_provider};
+
 use crate::cache::TtlCache;
 use crate::config::GatewayConfig;
 use crate::correlate::CorrelationIndex;
-use crate::regions::LiveTrainsProvider;
 
 /// Shared, cheaply-cloneable handle for axum handlers. The gateway is
 /// stateless across requests (the caches below are derived, disposable upstream
@@ -41,7 +42,7 @@ impl AppState {
         let offline_gate = Arc::new(tokio::sync::Semaphore::new(cfg.offline.max_concurrent));
         // The correlation bucketing is country-specific; pick the driver for the
         // resolved region's country (ADR 0017).
-        let normalizer = crate::regions::address_normalizer(&cfg.region_country);
+        let normalizer = address_normalizer(&cfg.region_country);
         let correlations = Arc::new(CorrelationIndex::load(&cfg.places_path, normalizer));
         tracing::info!(
             addressed_places = correlations.len(),
@@ -51,7 +52,7 @@ impl AppState {
         // The live-trains upstream is country-specific; pick the provider for the
         // resolved region's country and hand it the env-supplied base URL/region
         // (it owns the defaults for both) — same pattern as the normalizer above.
-        let live_trains = crate::regions::live_trains_provider(
+        let live_trains = live_trains_provider(
             &cfg.region_country,
             cfg.viaggiatreno_url.clone(),
             cfg.trenitalia_region,

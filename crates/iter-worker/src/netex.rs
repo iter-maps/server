@@ -2,10 +2,10 @@
 //! parser, the NeTEx element vocabulary, and the GTFS structure here are
 //! EU-standard, reusable for any country's NeTEx. The country-specific bits — the
 //! id codespace scheme and the synthesized agency — are dispatched through the
-//! [`crate::regions::NetexProfile`] trait to a `regions::<country>`
-//! driver (the default is the Italian NeTEx-IT / Trenitalia-FL profile, behind
-//! `regions::italy::netex`). First proven against the real Lazio dataset
-//! (`IT-ITI4-0083`, 5 lines / 450 stops / ~1600 journeys).
+//! [`iter_region_drivers::NetexProfile`] trait to a per-country driver (the
+//! default is the Italian NeTEx-IT / Trenitalia-FL profile). First proven
+//! against the real Lazio dataset (`IT-ITI4-0083`, 5 lines / 450 stops / ~1600
+//! journeys).
 //!
 //! The NeTEx is a single ~58 MB document, so we stream it with a pull parser and
 //! resolve: `Line` → route, `ScheduledStopPoint` (with its `Location`) → stop,
@@ -20,7 +20,7 @@ use std::io::{BufRead, Write};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
-use crate::regions::NetexProfile;
+use iter_region_drivers::NetexProfile;
 
 #[derive(Default)]
 pub struct Netex {
@@ -505,7 +505,7 @@ fn csv(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::regions::italy::netex::ItalyNetex;
+    use iter_region_drivers::{DEFAULT_NETEX_PROFILE, netex_profile};
     use std::io::Cursor;
 
     const SAMPLE: &str = r#"<PublicationDelivery>
@@ -558,7 +558,8 @@ mod tests {
 
     #[test]
     fn parses_the_netex_shape() {
-        let nx = parse(Cursor::new(SAMPLE), &ItalyNetex).unwrap();
+        let profile = netex_profile(DEFAULT_NETEX_PROFILE);
+        let nx = parse(Cursor::new(SAMPLE), profile.as_ref()).unwrap();
         assert_eq!(nx.operator, "TRENITALIA");
         assert_eq!(nx.lines.len(), 1);
         let line = nx.lines.get("10083_pass_0083").unwrap();
@@ -586,9 +587,10 @@ mod tests {
 
     #[test]
     fn emits_a_referentially_complete_gtfs() {
-        let nx = parse(Cursor::new(SAMPLE), &ItalyNetex).unwrap();
+        let profile = netex_profile(DEFAULT_NETEX_PROFILE);
+        let nx = parse(Cursor::new(SAMPLE), profile.as_ref()).unwrap();
         let mut out = Cursor::new(Vec::new());
-        let st = write_gtfs_zip(&nx, &ItalyNetex, &mut out).unwrap();
+        let st = write_gtfs_zip(&nx, profile.as_ref(), &mut out).unwrap();
         assert_eq!(st.routes, 1);
         assert_eq!(st.stops, 2);
         assert_eq!(st.trips, 1);
@@ -628,7 +630,7 @@ mod tests {
 
     #[test]
     fn date8_and_csv_helpers() {
-        // id stripping is the profile's job now (see regions::italy::netex).
+        // id stripping is the profile's job now (see iter-region-drivers).
         assert_eq!(date8("2026-04-21T00:00:00.000+02:00"), "20260421");
         assert_eq!(csv("A,B"), "\"A,B\"");
     }

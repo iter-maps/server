@@ -1,11 +1,11 @@
 //! Italian NeTEx-IT (`IT:ITI4`) profile for Trenitalia-FL (concept doc 11, ADR
-//! 0004, ADR 0017). This is the Italy driver behind the generic
-//! [`crate::regions::NetexProfile`] trait: the `IT:ITI4` id
+//! 0004, ADR 0017/0018). This is the Italy driver behind the generic
+//! [`crate::traits::NetexProfile`] trait: the `IT:ITI4` id
 //! codespace scheme and the FL/`Europe/Rome`/`it` agency Trenitalia's NeTEx
 //! carries no GTFS agency for. The streaming parser and GTFS structure stay
-//! generic in `netex.rs`.
+//! generic in the worker's `netex.rs`.
 
-use crate::regions::{AgencyInfo, NetexProfile};
+use crate::traits::{AgencyInfo, NetexProfile};
 
 /// The Italian NeTEx-IT (`IT:ITI4`) profile, Trenitalia-FL.
 pub struct ItalyNetex;

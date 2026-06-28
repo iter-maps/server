@@ -21,8 +21,9 @@ use axum::extract::{Query, State};
 use iter_contracts::places::{LonLat, Related, Relation};
 use serde::{Deserialize, Serialize};
 
+use iter_region_drivers::AddressNormalizer;
+
 use crate::http::ApiResult;
-use crate::regions::AddressNormalizer;
 use crate::state::AppState;
 
 /// One addressed place from the build-time extract.
@@ -205,10 +206,9 @@ pub async fn related_places(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::regions::italy::address::ItalyNormalizer;
 
     fn it() -> Arc<dyn AddressNormalizer> {
-        Arc::new(ItalyNormalizer)
+        iter_region_drivers::address_normalizer("italy")
     }
 
     fn poi(id: &str, name: &str, addr: &str, brand: Option<&str>) -> Poi {

@@ -62,3 +62,4 @@ a typo) do not need one.
 - [0015](0015-gtfs-rt-ingestion-vendored-prost.md) — GTFS-RT ingestion with a vendored prost subset
 - [0016](0016-fl-netex-to-gtfs-converter.md) — FL NeTEx→GTFS converter in the worker
 - [0017](0017-region-drivers-config-and-code.md) — Region specifics: config-driven where possible, drivers where code is needed
+- [0018](0018-region-drivers-in-one-crate.md) — Region drivers live in one `iter-region-drivers` crate

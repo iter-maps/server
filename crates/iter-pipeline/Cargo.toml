@@ -17,6 +17,7 @@ path = "src/main.rs"
 iter-core = { workspace = true }
 iter-contracts = { workspace = true }
 iter-region = { workspace = true }
+iter-region-drivers = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "process"] }
 reqwest = { workspace = true }
 anyhow = { workspace = true }

@@ -1,0 +1,23 @@
+[package]
+name = "iter-region-drivers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Region/country drivers behind traits + a registry (ADR 0018): address, live-trains, transit-overlay, and NeTEx-profile impls, subdivided by region."
+
+[lib]
+name = "iter_region_drivers"
+path = "src/lib.rs"
+
+[dependencies]
+iter-contracts = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+jiff = { workspace = true }

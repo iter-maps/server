@@ -1,8 +1,8 @@
 //! Live-train boards (`/trenitalia/*`): the generic axum handlers and the
 //! TTL-cache single-flight in front of the country's live-trains provider. The
 //! upstream client — its endpoints, field names and date format — is a
-//! country-specific driver behind [`crate::regions::LiveTrainsProvider`] (ADR
-//! 0017); this module
+//! country-specific driver behind [`iter_region_drivers::LiveTrainsProvider`]
+//! (ADR 0017); this module
 //! carries no operator/country knowledge, only the cache keys and HTTP glue.
 
 use std::time::Duration;
@@ -11,11 +11,27 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
+use iter_core::ApiError;
+use iter_region_drivers::BoardKind;
 use serde::Deserialize;
 
 use crate::http::{ApiErr, ApiResult};
-use crate::regions::BoardKind;
 use crate::state::AppState;
+
+/// Map a provider's [`anyhow::Error`] to the gateway's error envelope. The
+/// drivers (now in `iter-region-drivers`) report failures as `anyhow::Error`
+/// rather than [`ApiError`], so the boundary lives here: a station-id validation
+/// failure is a client error (400), and everything else is an upstream failure
+/// the caller can retry (503).
+fn provider_err(e: anyhow::Error) -> ApiErr {
+    let msg = e.to_string();
+    let api = if msg.contains("must match") {
+        ApiError::bad_request(msg)
+    } else {
+        ApiError::new(503, iter_core::code::UPSTREAM_UNAVAILABLE, msg)
+    };
+    ApiErr::from(api)
+}
 
 const SEARCH_TTL: Duration = Duration::from_secs(60 * 60);
 const LIST_TTL: Duration = Duration::from_secs(12 * 60 * 60);
@@ -51,7 +67,7 @@ pub async fn stations_search(
     let result = state
         .stations
         .get_or_fetch(&key, SEARCH_TTL, || async move {
-            provider.search(&http, &term).await.map_err(ApiErr::from)
+            provider.search(&http, &term).await.map_err(provider_err)
         })
         .await?;
     Ok(cached(Json(result), 600))
@@ -69,7 +85,7 @@ pub async fn stations_list(
     let result = state
         .stations
         .get_or_fetch(&key, LIST_TTL, || async move {
-            provider.list(&http, region).await.map_err(ApiErr::from)
+            provider.list(&http, region).await.map_err(provider_err)
         })
         .await?;
     Ok(cached(Json(result), 3600))
@@ -108,7 +124,7 @@ async fn board(state: AppState, station: Option<String>, kind: BoardKind) -> Api
             provider
                 .board(&http, &station, kind)
                 .await
-                .map_err(ApiErr::from)
+                .map_err(provider_err)
         })
         .await?;
     Ok(cached(Json(result), 20))
