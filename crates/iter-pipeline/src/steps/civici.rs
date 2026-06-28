@@ -60,7 +60,14 @@ impl Step for ExtractCivici {
         tokio::fs::create_dir_all(ctx.photon_dir()).await?;
         let release = config::or("CIVICI_OVERTURE_RELEASE", DEFAULT_OVERTURE_RELEASE);
         let ext_dir = config::or("DUCKDB_EXT_DIR", "/opt/duckdb/ext");
-        let sql = civici_sql(&release, &ext_dir, &bbox, &out);
+        let country = ctx
+            .region
+            .geocoding
+            .as_ref()
+            .and_then(|g| g.country_codes.split(',').next())
+            .unwrap_or("")
+            .trim();
+        let sql = civici_sql(&release, &ext_dir, &bbox, country, &out);
 
         tracing::info!(release, bbox = %bbox_str, "extracting civici from Overture via DuckDB");
         let status = tokio::process::Command::new("duckdb")
@@ -86,7 +93,7 @@ impl Step for ExtractCivici {
 /// dump format: `centroid` is `[lon,lat]`, `place_id` is the Overture id
 /// sanitized to `[A-Za-z0-9_-]` and capped at 60 chars, and rows are deduped on
 /// `(street, number, city)`.
-fn civici_sql(release: &str, ext_dir: &str, bbox: &BBox, out: &Path) -> String {
+fn civici_sql(release: &str, ext_dir: &str, bbox: &BBox, country: &str, out: &Path) -> String {
     let src =
         format!("s3://overturemaps-us-west-2/release/{release}/theme=addresses/type=address/*");
     format!(
@@ -105,7 +112,7 @@ COPY (
            'importance', 0.00005,
            'housenumber', number,
            'postcode', postcode,
-           'country_code', 'it',
+           'country_code', '{country}',
            'address', json_object('street', street, 'city', postal_city),
            'centroid', json_array(ST_X(geometry), ST_Y(geometry))
          )) AS content
@@ -136,6 +143,7 @@ mod tests {
             "2026-06-17.0",
             "/opt/duckdb/ext",
             &bbox,
+            "it",
             Path::new("/data/photon/civici.jsonl"),
         );
         // reads the right theme from the public bucket, keyless.
@@ -145,6 +153,7 @@ mod tests {
         // emits the Photon dump wrapper + house-doc fields.
         assert!(sql.contains("'Place' AS type"));
         assert!(sql.contains("'object_type', 'itermaps:civico'"));
+        assert!(sql.contains("'country_code', 'it'"));
         assert!(sql.contains("'osm_value', 'house'"));
         assert!(sql.contains("'importance', 0.00005"));
         assert!(sql.contains("json_array(ST_X(geometry), ST_Y(geometry))"));
@@ -160,7 +169,7 @@ mod tests {
     #[test]
     fn place_id_is_sanitized_and_capped() {
         let bbox = BBox::parse("12.10,41.60,12.95,42.20").unwrap();
-        let sql = civici_sql("r", "/x", &bbox, Path::new("/o.jsonl"));
+        let sql = civici_sql("r", "/x", &bbox, "it", Path::new("/o.jsonl"));
         // 'ov' prefix, strip non-id chars, cap at 60 (Photon place_id limit).
         assert!(sql.contains("left('ov' || regexp_replace(id, '[^A-Za-z0-9_-]', '', 'g'), 60)"));
     }

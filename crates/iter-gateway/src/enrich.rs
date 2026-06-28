@@ -46,7 +46,7 @@ pub async fn enrich(
     State(state): State<AppState>,
     Query(params): Query<EnrichParams>,
 ) -> ApiResult<Json<Place>> {
-    let target = Target::from_params(&params)?;
+    let target = Target::from_params(&params, &state.cfg.default_lang)?;
     let key = target.cache_key();
     let place = state
         .places
@@ -103,8 +103,8 @@ struct Target {
 }
 
 impl Target {
-    fn from_params(p: &EnrichParams) -> Result<Self, ApiErr> {
-        let lang = p.lang.clone().unwrap_or_else(|| "it".to_string());
+    fn from_params(p: &EnrichParams, default_lang: &str) -> Result<Self, ApiErr> {
+        let lang = p.lang.clone().unwrap_or_else(|| default_lang.to_string());
         if let Some(wp) = &p.wikipedia {
             // `lang:Title`
             let (l, t) = wp
@@ -556,23 +556,29 @@ mod tests {
 
     #[test]
     fn target_resolution_from_params() {
-        let t = Target::from_params(&EnrichParams {
-            wikipedia: Some("it:Colosseo".into()),
-            ..Default::default()
-        })
+        let t = Target::from_params(
+            &EnrichParams {
+                wikipedia: Some("it:Colosseo".into()),
+                ..Default::default()
+            },
+            "it",
+        )
         .unwrap();
         assert_eq!(t.lang, "it");
         assert_eq!(t.title.as_deref(), Some("Colosseo"));
 
-        let t = Target::from_params(&EnrichParams {
-            wikidata: Some("Q10285".into()),
-            ..Default::default()
-        })
+        let t = Target::from_params(
+            &EnrichParams {
+                wikidata: Some("Q10285".into()),
+                ..Default::default()
+            },
+            "it",
+        )
         .unwrap();
         assert_eq!(t.qid.as_deref(), Some("Q10285"));
         assert!(t.title.is_none());
 
         // nothing to resolve → bad request.
-        assert!(Target::from_params(&EnrichParams::default()).is_err());
+        assert!(Target::from_params(&EnrichParams::default(), "it").is_err());
     }
 }
