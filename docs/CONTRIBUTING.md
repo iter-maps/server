@@ -52,7 +52,7 @@ Never commit secrets, tokens, credentials, or non-public data.
 
 Any architecturally-significant change (a new crate/service, a wire-contract or
 config change, a notable dependency, the build/deploy model, the security or
-licensing posture) must include an **ADR** in [`docs/adr/`](docs/adr/README.md),
+licensing posture) must include an **ADR** in [`docs/adr/`](adr/README.md),
 in the same PR. See that README for what counts and the template. A reviewer may
 ask for one if a significant change arrives without it.
 

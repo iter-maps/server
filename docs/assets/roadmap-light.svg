@@ -1,0 +1,33 @@
+<svg viewBox="0 0 900 492" xmlns="http://www.w3.org/2000/svg" role="img" font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+<title>Iter Maps roadmap</title>
+<desc>Features grouped into available now, in progress, and planned.</desc>
+<rect x="1" y="1" width="898" height="490" rx="22" fill="#FCFCFE" stroke="#E7E7EF" stroke-width="1.5"/>
+<text x="40" y="56" font-size="30" font-weight="600" fill="#4248C9">roadmap</text>
+<text x="40" y="82" font-size="15" fill="#6B6B7B">what's live, and what's on the way.</text>
+<line x1="40" y1="102" x2="860" y2="102" stroke="#ECECF3" stroke-width="1.5"/>
+<circle cx="48" cy="134" r="5" fill="#4F46E5"/>
+<text x="62" y="139" font-size="16" font-weight="600" fill="#13131A">Available now</text>
+<circle cx="328" cy="134" r="5" fill="none" stroke="#4F46E5" stroke-width="2.4"/>
+<text x="342" y="139" font-size="16" font-weight="600" fill="#13131A">In progress</text>
+<circle cx="608" cy="134" r="5" fill="#C9C9D6"/>
+<text x="622" y="139" font-size="16" font-weight="600" fill="#13131A">Planned</text>
+<g>
+<rect x="40" y="158" width="260" height="42" rx="12" fill="#EEF0FD"/><text x="58" y="184" font-size="15" font-weight="500" fill="#2A2A4A">Journey planning</text>
+<rect x="40" y="211" width="260" height="42" rx="12" fill="#EEF0FD"/><text x="58" y="237" font-size="15" font-weight="500" fill="#2A2A4A">Search &amp; places</text>
+<rect x="40" y="264" width="260" height="42" rx="12" fill="#EEF0FD"/><text x="58" y="290" font-size="15" font-weight="500" fill="#2A2A4A">Maps &amp; transit overlays</text>
+<rect x="40" y="317" width="260" height="42" rx="12" fill="#EEF0FD"/><text x="58" y="343" font-size="15" font-weight="500" fill="#2A2A4A">Offline maps</text>
+<rect x="40" y="370" width="260" height="42" rx="12" fill="#EEF0FD"/><text x="58" y="396" font-size="15" font-weight="500" fill="#2A2A4A">Live arrivals &amp; delays</text>
+<rect x="40" y="423" width="260" height="42" rx="12" fill="#EEF0FD"/><text x="58" y="449" font-size="15" font-weight="500" fill="#2A2A4A">Live train boards</text>
+</g>
+<g>
+<rect x="320" y="158" width="260" height="42" rx="12" fill="#FFFFFF" stroke="#4F46E5" stroke-width="1.5"/><text x="338" y="184" font-size="15" font-weight="500" fill="#3A3AA0">On-time reliability</text>
+<rect x="320" y="211" width="260" height="42" rx="12" fill="#FFFFFF" stroke="#4F46E5" stroke-width="1.5"/><text x="338" y="237" font-size="15" font-weight="500" fill="#3A3AA0">Daily-fresh schedules</text>
+</g>
+<g>
+<rect x="600" y="158" width="260" height="42" rx="12" fill="#FFFFFF" stroke="#E2E2EC" stroke-width="1.5"/><text x="618" y="184" font-size="15" font-weight="500" fill="#6B6B7B">Personalized routes</text>
+<rect x="600" y="211" width="260" height="42" rx="12" fill="#FFFFFF" stroke="#E2E2EC" stroke-width="1.5"/><text x="618" y="237" font-size="15" font-weight="500" fill="#6B6B7B">Private sync across devices</text>
+<rect x="600" y="264" width="260" height="42" rx="12" fill="#FFFFFF" stroke="#E2E2EC" stroke-width="1.5"/><text x="618" y="290" font-size="15" font-weight="500" fill="#6B6B7B">Crowding</text>
+<rect x="600" y="317" width="260" height="42" rx="12" fill="#FFFFFF" stroke="#E2E2EC" stroke-width="1.5"/><text x="618" y="343" font-size="15" font-weight="500" fill="#6B6B7B">Europe-wide coverage</text>
+<rect x="600" y="370" width="260" height="42" rx="12" fill="#FFFFFF" stroke="#E2E2EC" stroke-width="1.5"/><text x="618" y="396" font-size="15" font-weight="500" fill="#6B6B7B">Traffic</text>
+</g>
+</svg>

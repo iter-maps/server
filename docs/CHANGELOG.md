@@ -91,4 +91,4 @@ The remaining data-production steps (overlay geometry, FL NeTEx→GTFS), the
 deferred place-discovery waves (Wikivoyage editorial, commercial place/traffic
 overlays — wave 1 keyless enrichment + correlation is built), the worker jobs
 (RT-reliability rollups, daily graph refresh), and the planned forward-looking
-capabilities — all tracked in [`docs/roadmap/`](docs/roadmap/).
+capabilities — all tracked in [`docs/roadmap/`](roadmap/).
