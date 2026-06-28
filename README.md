@@ -5,14 +5,11 @@
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dark.svg">
     <img alt="Iter Maps" src="docs/assets/wordmark-light.svg" width="180">
   </picture>
-  <p>
-    <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0-4248C9.svg"></a>
-    <a href="https://github.com/iter-maps/server/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/iter-maps/server/actions/workflows/ci.yml/badge.svg"></a>
-    <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-4248C9.svg">
-  </p>
 </div>
 
 ---
+
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0-4248C9.svg)](LICENSE) [![CI status](https://github.com/iter-maps/server/actions/workflows/ci.yml/badge.svg)](https://github.com/iter-maps/server/actions/workflows/ci.yml) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-4248C9.svg)
 
 The open-source backend behind **Iter Maps** — public-transport journey planning
 and maps for Europe. It turns open data into routing, search, live transit, and
