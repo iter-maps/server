@@ -2,6 +2,7 @@ mod gtfs_rt;
 mod job;
 mod jobs;
 mod netex;
+mod regions;
 mod scheduler;
 
 use std::path::PathBuf;
@@ -37,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
                 "https://www.cciss.it/nap/mmtis/public/api/v1/download/blob/Asset/663391/checkedResource",
             ))
             .filter(|u| !u.is_empty()),
+            // The FL feed is the Italian NeTEx-IT profile (ADR 0017).
+            netex_profile: regions::DEFAULT_NETEX_PROFILE.to_string(),
             http: http.clone(),
         }),
         Box::new(jobs::rt_reliability::RtReliability::from_env(http)),

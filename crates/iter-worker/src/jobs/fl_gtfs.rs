@@ -14,11 +14,16 @@ use tokio::io::AsyncWriteExt;
 
 use crate::job::Job;
 use crate::netex;
+use crate::regions;
 
 pub struct FlGtfsBuild {
     pub netex_path: PathBuf,
     pub out_path: PathBuf,
     pub netex_url: Option<String>,
+    /// NeTEx profile id selecting the country driver (ADR 0017); the FL feed is
+    /// the Italian NeTEx-IT default (`it-iti4`). Moving this into region.toml
+    /// feeds is a separate future step.
+    pub netex_profile: String,
     pub http: reqwest::Client,
 }
 
@@ -53,7 +58,10 @@ impl Job for FlGtfsBuild {
 
         let netex_path = self.netex_path.clone();
         let out = self.out_path.clone();
-        let stats = tokio::task::spawn_blocking(move || convert_file(&netex_path, &out)).await??;
+        let profile_id = self.netex_profile.clone();
+        let stats =
+            tokio::task::spawn_blocking(move || convert_file(&netex_path, &out, &profile_id))
+                .await??;
         tracing::info!(
             stops = stats.stops,
             routes = stats.routes,
@@ -105,14 +113,17 @@ async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::R
 }
 
 /// Decompress (if `.gz`), parse the NeTEx, and write the GTFS zip atomically.
-fn convert_file(netex: &Path, out: &Path) -> anyhow::Result<netex::Stats> {
+/// The NeTEx profile id selects the country driver (ADR 0017) for id stripping
+/// and the synthesized agency.
+fn convert_file(netex: &Path, out: &Path, profile_id: &str) -> anyhow::Result<netex::Stats> {
+    let profile = regions::netex_profile(profile_id);
     let file = std::fs::File::open(netex)?;
     let reader: Box<dyn BufRead> = if netex.extension().and_then(|e| e.to_str()) == Some("gz") {
         Box::new(std::io::BufReader::new(flate2::read::GzDecoder::new(file)))
     } else {
         Box::new(std::io::BufReader::new(file))
     };
-    let nx = netex::parse(reader)?;
+    let nx = netex::parse(reader, profile.as_ref())?;
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;
@@ -120,7 +131,7 @@ fn convert_file(netex: &Path, out: &Path) -> anyhow::Result<netex::Stats> {
     let mut tmp = out.to_path_buf().into_os_string();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    let stats = netex::write_gtfs_zip(&nx, std::fs::File::create(&tmp)?)?;
+    let stats = netex::write_gtfs_zip(&nx, profile.as_ref(), std::fs::File::create(&tmp)?)?;
     std::fs::rename(&tmp, out)?;
     Ok(stats)
 }
@@ -128,12 +139,14 @@ fn convert_file(netex: &Path, out: &Path) -> anyhow::Result<netex::Stats> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regions::DEFAULT_NETEX_PROFILE;
 
     fn job(netex_path: PathBuf, out_path: PathBuf) -> FlGtfsBuild {
         FlGtfsBuild {
             netex_path,
             out_path,
             netex_url: None,
+            netex_profile: DEFAULT_NETEX_PROFILE.to_string(),
             http: reqwest::Client::new(),
         }
     }

@@ -1,7 +1,10 @@
-//! NeTEx → GTFS conversion for the Trenitalia-FL regional rail (concept doc 11,
-//! ADR 0004). Trenitalia publishes no routable GTFS for the FL lines, only the
-//! official NeTEx (IT profile, from the CCISS NAP) — we synthesize a GTFS feed
-//! the OTP graph build consumes. Built against the real Lazio dataset
+//! Generic NeTEx → GTFS conversion (concept doc 11, ADR 0004, ADR 0017). The
+//! parser, the NeTEx element vocabulary, and the GTFS structure here are
+//! EU-standard, reusable for any country's NeTEx. The country-specific bits — the
+//! id codespace scheme and the synthesized agency — are dispatched through the
+//! [`crate::regions::NetexProfile`] trait to a `regions::<country>`
+//! driver (the default is the Italian NeTEx-IT / Trenitalia-FL profile, behind
+//! `regions::italy::netex`). First proven against the real Lazio dataset
 //! (`IT-ITI4-0083`, 5 lines / 450 stops / ~1600 journeys).
 //!
 //! The NeTEx is a single ~58 MB document, so we stream it with a pull parser and
@@ -16,6 +19,8 @@ use std::io::{BufRead, Write};
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
+
+use crate::regions::NetexProfile;
 
 #[derive(Default)]
 pub struct Netex {
@@ -64,11 +69,13 @@ pub struct Stats {
     pub services: usize,
 }
 
-/// Stream-parse a NeTEx document into the intermediate model.
-pub fn parse<R: BufRead>(r: R) -> anyhow::Result<Netex> {
+/// Stream-parse a NeTEx document into the intermediate model. Ids are stripped
+/// through the supplied profile's codespace scheme (ADR 0017).
+pub fn parse<R: BufRead>(r: R, profile: &dyn NetexProfile) -> anyhow::Result<Netex> {
     let mut reader = Reader::from_reader(r);
     let mut buf = Vec::new();
     let mut nx = Netex::default();
+    let gid = |s: &str| profile.strip_id(s);
 
     let mut stack: Vec<String> = Vec::new();
     let mut text = String::new();
@@ -304,12 +311,20 @@ pub fn parse<R: BufRead>(r: R) -> anyhow::Result<Netex> {
     Ok(nx)
 }
 
-/// Emit the parsed model as a GTFS feed (zip) and return the row counts.
-pub fn write_gtfs_zip<W: Write + std::io::Seek>(nx: &Netex, w: W) -> anyhow::Result<Stats> {
+/// Emit the parsed model as a GTFS feed (zip) and return the row counts. The
+/// agency block and the route `agency_id` come from the supplied profile (ADR
+/// 0017); the NeTEx feed's `Operator` name overrides the profile's agency name
+/// when present.
+pub fn write_gtfs_zip<W: Write + std::io::Seek>(
+    nx: &Netex,
+    profile: &dyn NetexProfile,
+    w: W,
+) -> anyhow::Result<Stats> {
     let mut zip = zip::ZipWriter::new(w);
     let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
+    let info = profile.agency();
     let agency = if nx.operator.is_empty() {
-        "Trenitalia"
+        info.name
     } else {
         &nx.operator
     };
@@ -323,8 +338,12 @@ pub fn write_gtfs_zip<W: Write + std::io::Seek>(nx: &Netex, w: W) -> anyhow::Res
     )?;
     writeln!(
         zip,
-        "FL,{},https://www.trenitalia.com,Europe/Rome,it",
-        csv(agency)
+        "{},{},{},{},{}",
+        info.id,
+        csv(agency),
+        info.url,
+        info.timezone,
+        info.lang
     )?;
 
     zip.start_file("stops.txt", opts)?;
@@ -345,8 +364,9 @@ pub fn write_gtfs_zip<W: Write + std::io::Seek>(nx: &Netex, w: W) -> anyhow::Res
     for (id, l) in &nx.lines {
         writeln!(
             zip,
-            "{},FL,{},{},{}",
+            "{},{},{},{},{}",
             csv(id),
+            info.id,
             csv(&l.short),
             csv(&l.long),
             l.route_type
@@ -436,17 +456,6 @@ fn attr(e: &BytesStart, key: &str) -> String {
         .unwrap_or_default()
 }
 
-/// NeTEx id → a clean GTFS local id: the part after the `IT:ITI4:<Type>:` prefix
-/// (`IT:ITI4:ScheduledStopPoint:830008328_pass_0083` → `830008328_pass_0083`).
-fn gid(s: &str) -> String {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() > 3 {
-        parts[3..].join("_")
-    } else {
-        s.replace(':', "_")
-    }
-}
-
 fn mode_to_type(mode: &str) -> u8 {
     match mode {
         "tram" => 0,
@@ -496,6 +505,7 @@ fn csv(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regions::italy::netex::ItalyNetex;
     use std::io::Cursor;
 
     const SAMPLE: &str = r#"<PublicationDelivery>
@@ -548,7 +558,7 @@ mod tests {
 
     #[test]
     fn parses_the_netex_shape() {
-        let nx = parse(Cursor::new(SAMPLE)).unwrap();
+        let nx = parse(Cursor::new(SAMPLE), &ItalyNetex).unwrap();
         assert_eq!(nx.operator, "TRENITALIA");
         assert_eq!(nx.lines.len(), 1);
         let line = nx.lines.get("10083_pass_0083").unwrap();
@@ -576,9 +586,9 @@ mod tests {
 
     #[test]
     fn emits_a_referentially_complete_gtfs() {
-        let nx = parse(Cursor::new(SAMPLE)).unwrap();
+        let nx = parse(Cursor::new(SAMPLE), &ItalyNetex).unwrap();
         let mut out = Cursor::new(Vec::new());
-        let st = write_gtfs_zip(&nx, &mut out).unwrap();
+        let st = write_gtfs_zip(&nx, &ItalyNetex, &mut out).unwrap();
         assert_eq!(st.routes, 1);
         assert_eq!(st.stops, 2);
         assert_eq!(st.trips, 1);
@@ -596,6 +606,18 @@ mod tests {
         ] {
             assert!(zip.by_name(f).is_ok(), "{f} present");
         }
+        // The profile's agency + the route's agency_id stay byte-for-byte the
+        // Trenitalia-FL literals (the SAMPLE has an Operator, so the name is its
+        // override).
+        let mut agency = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("agency.txt").unwrap(), &mut agency)
+            .unwrap();
+        assert!(agency.contains("FL,TRENITALIA,https://www.trenitalia.com,Europe/Rome,it"));
+        let mut routes = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("routes.txt").unwrap(), &mut routes)
+            .unwrap();
+        assert!(routes.contains("10083_pass_0083,FL,REG,Regionale,2"));
+
         let mut stop_times = String::new();
         std::io::Read::read_to_string(&mut zip.by_name("stop_times.txt").unwrap(), &mut stop_times)
             .unwrap();
@@ -605,12 +627,9 @@ mod tests {
     }
 
     #[test]
-    fn date8_and_gid_helpers() {
+    fn date8_and_csv_helpers() {
+        // id stripping is the profile's job now (see regions::italy::netex).
         assert_eq!(date8("2026-04-21T00:00:00.000+02:00"), "20260421");
-        assert_eq!(
-            gid("IT:ITI4:ScheduledStopPoint:830008328_pass_0083"),
-            "830008328_pass_0083"
-        );
         assert_eq!(csv("A,B"), "\"A,B\"");
     }
 }
