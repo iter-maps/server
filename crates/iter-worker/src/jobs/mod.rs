@@ -1,8 +1,7 @@
 //! Background jobs, derived from the resolved region's feeds (ADR 0019).
 //!
 //! `fl_gtfs` (FL NeTEx→GTFS), `rt_reliability` (GTFS-RT ingestion), and
-//! `reliability_rollup` (Tier-0/1/2 rollups, ADR 0022) are wired; the daily
-//! graph-refresh trigger is tracked in `docs/roadmap/`.
+//! `reliability_rollup` (Tier-0/1/2 rollups, ADR 0022) are wired.
 
 pub mod fl_gtfs;
 pub mod reliability_rollup;

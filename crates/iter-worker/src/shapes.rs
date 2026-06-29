@@ -1,9 +1,8 @@
-//! Rail-geometry shapes for the FL GTFS (extends ADR 0016). Per the design
-//! (concept docs 25/26), a line's geometry comes from its OSM `route=train`
-//! relation, NOT from per-trip GTFS shapes: the relation's member rail ways are
-//! stitched into ONE continuous ordered polyline per branch, which GTFS then
-//! carries as a `shapes.txt` row that every trip on that line points at via
-//! `shape_id`.
+//! Rail-geometry shapes for the FL GTFS (extends ADR 0016). A line's geometry
+//! comes from its OSM `route=train` relation, NOT from per-trip GTFS shapes:
+//! the relation's member rail ways are stitched into ONE continuous ordered
+//! polyline per branch, which GTFS then carries as a `shapes.txt` row that
+//! every trip on that line points at via `shape_id`.
 //!
 //! Two halves, split so the geometry is testable without a real PBF:
 //! - [`stitch`] is a pure, I/O-free function over member ways — greedy endpoint

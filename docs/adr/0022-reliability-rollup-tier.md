@@ -14,8 +14,7 @@ region's trip-updates feed every ~30 s, decodes it, and derives one validated
 delay observation per stop on the **stable** (route, direction, stop,
 service-date) key — never the raw `trip_id` (renumbered near-daily). Today those
 observations are only counted and dropped; history can't be back-filled, so the
-recorder must start persisting now even though the value accrues over weeks
-(concept doc 23).
+recorder must start persisting now even though the value accrues over weeks.
 
 Historical reliability needs an archive that a future reranker (and a no-live-
 signal predictor) can read, without keeping raw events forever (~1 TiB/yr) and

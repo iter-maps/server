@@ -1,5 +1,5 @@
 //! Pure, I/O-free rollup core for the reliability archive. Folds derived
-//! stop-events (concept doc 23) into mergeable aggregates over three tiers, and
+//! stop-events into mergeable aggregates over three tiers, and
 //! reads percentiles + on-time rate back out. Everything here is a plain
 //! function or struct with no filesystem touch, so the merge algebra is fully
 //! unit-testable; the store adapter (`reliability::store`) wires it to disk.
@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 /// On-time window: a stop is "on time" when its delay is within [-60s, +300s]
-/// (early by ≤1 min, late by ≤5 min). From concept doc 23.
+/// (early by ≤1 min, late by ≤5 min).
 pub const ON_TIME_MIN_S: i32 = -60;
 pub const ON_TIME_MAX_S: i32 = 300;
 
@@ -118,7 +118,7 @@ impl Histogram {
     }
 }
 
-/// Time-of-day buckets (concept doc 23). Derived from the local wall-clock hour
+/// Time-of-day buckets. Derived from the local wall-clock hour
 /// of the observation; we don't carry a finer timestamp than the service-date,
 /// so the bucket is assigned at fold time from the feed timestamp where present
 /// (see `tod_bucket_from_hour`). Six coarse buckets.
@@ -158,7 +158,7 @@ pub fn tod_bucket_from_hour(hour: i32) -> TodBucket {
     }
 }
 
-/// Day-type classes (concept doc 23). Sunday and public holidays collapse
+/// Day-type classes. Sunday and public holidays collapse
 /// together because they share a reduced-service profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DayType {
