@@ -93,6 +93,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forced_step_runs_even_when_satisfied() {
+        // FORCE_<name> must re-run an already-satisfied step. A unique step name
+        // keeps the FORCE_ env var private to this test under parallel runs.
+        let name = "STEP_FORCE_ONLY";
+        let key = format!("FORCE_{name}");
+        // SAFETY: single-threaded set/remove around this call; the key is unique
+        // to this test so no other test reads it.
+        unsafe { std::env::set_var(&key, "true") };
+
+        let ran = Arc::new(AtomicUsize::new(0));
+        let steps: Vec<Box<dyn Step>> = vec![Box::new(FakeStep {
+            name,
+            satisfied: true,
+            fail: false,
+            ran: ran.clone(),
+        })];
+        run_all(&ctx(), &steps).await.unwrap();
+
+        unsafe { std::env::remove_var(&key) };
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            1,
+            "a forced step runs despite being satisfied"
+        );
+    }
+
+    #[tokio::test]
     async fn aborts_on_first_failure() {
         let first = Arc::new(AtomicUsize::new(0));
         let after = Arc::new(AtomicUsize::new(0));

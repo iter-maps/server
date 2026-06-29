@@ -81,8 +81,12 @@ pipeline and worker frameworks are in place. What remains:
   Visvalingam-Whyatt simplification, with a per-station fall-back to the raw hull
   if smoothing would invalidate the polygon, drop a stop, or distort the area).
   **Remaining:** corridor union (merging buffered real-corridor geometry into the
-  concourse, gated on a robust polygon buffer) and the `STYLES` render step.
-  Decision: ADR 0014.
+  concourse, gated on a robust polygon buffer). Decisions: ADR 0014, ADR 0025.
+- **Style render** ✅ done (ADR 0025) — the `STYLES` pipeline step renders the four
+  whitelisted MapLibre styles (Standard / Transit × light / dark) into
+  `output/styles/`, each wired to the region's tile source, glyphs, the sprite
+  (Standard only), and the region's overlay sources via the literal `__BASE_URL__`
+  token, byte-stable so the gateway serves exactly what the build produced.
 - **Pipeline refresh triggers** — the runner framework, the `FORCE_*`/`SKIP_*`
   knobs, and the build steps are implemented; the daily (`--gtfs` + graph) /
   monthly (`--osm`) refresh **triggers** remain. Best realized as a scheduled

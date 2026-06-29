@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         Box::new(steps::graph::BuildGraph),
         Box::new(steps::router_config::WriteRouterConfig),
         Box::new(steps::overlay::BuildOverlays),
+        Box::new(steps::styles::RenderStyles),
         Box::new(steps::civici::ExtractCivici),
         Box::new(steps::photon::BuildPhotonIndex),
         Box::new(steps::places::ExtractPlaces),

@@ -41,8 +41,7 @@ use iter_region_drivers::{LineKind, Projection, TransitOverlayDriver, overlay_dr
 use crate::context::Context;
 use crate::fsx;
 use crate::step::Step;
-
-const IMPLEMENTED: &[&str] = &["transit-lines", "metro-stations"];
+use crate::steps::IMPLEMENTED_OVERLAY_KINDS as IMPLEMENTED;
 
 pub struct BuildOverlays;
 

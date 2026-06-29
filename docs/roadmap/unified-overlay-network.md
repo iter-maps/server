@@ -17,7 +17,7 @@ routable flags.
   best-effort, never-fail.
 - **Landed so far:** the metro-stations concourse is smoothed into an organic
   footprint (Chaikin corner-cutting + Visvalingam-Whyatt simplification, ADR
-  0014). Still remaining on the geometry side: corridor union (gated on a robust
-  polygon buffer) and the `STYLES` render step.
+  0014); the `STYLES` render step landed (ADR 0025). Still remaining on the
+  geometry side: corridor union (gated on a robust polygon buffer).
 
 Decision: ADR 0018

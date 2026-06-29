@@ -85,7 +85,8 @@ style render, build-config generation, overlay generation, health write).
 Implemented steps: **OSM** (fetch the regional PBF) → **CLIP** (osmium carves the
 routing extent) → **GTFS** (fetch the region's feeds) → **BUILD_CONFIG** (pin
 OTP's inputs with stable feedIds) → **GRAPH** (OTP `--build --save`) → **OVERLAY**
-(transit overlays from the clip) → **CIVICI** (Overture house numbers via DuckDB)
+(transit overlays from the clip) → **STYLES** (render the four MapLibre styles) →
+**CIVICI** (Overture house numbers via DuckDB)
 → **PHOTON** (geocoding index import) → **PLACES** (addressed POIs for the
 correlation index) → **TILES** (planetiler render) → **HEALTH**. OTP's inputs and its `graph.obj`
 share `/data/graph` (loaded read-only by OTP, ADR 0009); the Photon index lives
@@ -95,9 +96,12 @@ number. **OVERLAY** generates the transit overlays from the OSM clip in pure Rus
 `transit-lines` (way-union line geometry) and `metro-stations` (concave-hull
 concourses smoothed into organic footprints via Chaikin corner-cutting +
 Visvalingam-Whyatt simplification, plus per-direction platform strips + exits),
-no shapely (ADR 0014).
-Routing/geocoding/overlay steps no-op for a region lacking that config. STYLES
-lands next (roadmap).
+no shapely (ADR 0014). **STYLES** renders the four whitelisted MapLibre styles
+(Standard / Transit × light / dark) into `output/styles/`, each wired to the
+region's tile source, the glyph endpoint, the sprite (Standard only), and the
+region's overlay sources, all via the literal `__BASE_URL__` token the gateway
+rewrites per request — deterministic and byte-stable (ADR 0025).
+Routing/geocoding/overlay steps no-op for a region lacking that config.
 
 ### `iter-worker` (background tier)
 
