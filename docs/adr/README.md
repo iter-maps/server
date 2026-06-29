@@ -72,3 +72,4 @@ a typo) do not need one.
 - [0026](0026-gateway-soft-itinerary-reranking.md) — Gateway-side soft itinerary reranking (reliability, wave 1)
 - [0027](0027-rerank-id-normalization.md) — Reranker normalizes OTP feed-prefixed ids to the reliability key space
 - [0028](0028-rerank-composite-soft-factors.md) — Composite soft itinerary reranking with profiles (wave 1b)
+- [0029](0029-multi-region-transit-overlay-model.md) — Multi-region transit-overlay model (overlay Phase 0)

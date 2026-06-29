@@ -9,10 +9,15 @@
 //! selected from the resolved region (ADR 0017). A region with no driver logs
 //! and skips.
 //!
-//! `transit-lines`: for every driver-owned `route=subway|tram` relation, union
-//! the track-way members across all direction/variant relations of a line
-//! (shared track deduped by way id), emit one `MultiLineString` feature per line
-//! with the GTFS route id + colour.
+//! `transit-lines`: for every driver-owned route relation in the widened set
+//! (`route=subway|tram|light_rail|rail|regional_rail`, ADR 0029), union the
+//! track-way members across all direction/variant relations of a line (shared
+//! track deduped by way id), emit one `MultiLineString` feature per line with the
+//! GTFS route id + colour. Member route relations gathered under one
+//! `route_master` collapse to a single line; otherwise lines group by
+//! `(network, route mode, ref)`. Each feature carries additive `network` +
+//! `routable` identity props (ADR 0029); overlay-only lines get an
+//! `OSM:<network>:<ref>` id.
 //!
 //! `metro-stations`: per metro station, emit a `concourse` (concave hull of the
 //! station's stop/platform/exit points, smoothed into an organic footprint via
@@ -140,18 +145,64 @@ fn declared_implemented(ctx: &Context) -> Vec<String> {
         .collect()
 }
 
-/// The GeoJSON `kind` label for a route line.
-fn line_kind_str(kind: LineKind) -> &'static str {
-    match kind {
-        LineKind::Metro => "metro",
-        LineKind::Tram => "tram",
+/// The OSM `route=*` modes the overlay draws (ADR 0029). Metro and tram keep the
+/// original driver-dispatched behaviour (the driver's [`LineKind`] colour/gtfs
+/// conventions); the widened rail family draws as generic lines (null colour,
+/// OSM-derived id) where a region has no in-scope timetable for them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum RouteMode {
+    Metro,
+    Tram,
+    LightRail,
+    Rail,
+    RegionalRail,
+}
+
+impl RouteMode {
+    /// Map an OSM `route=*` value to a draw mode. `subway` only counts as metro
+    /// when the driver's allow-set promotes it; everything else maps by name.
+    fn from_osm(route: &str, line: &str, driver: &dyn TransitOverlayDriver) -> Option<Self> {
+        match route {
+            "subway" if driver.is_metro_line(line) => Some(RouteMode::Metro),
+            "tram" => Some(RouteMode::Tram),
+            "light_rail" => Some(RouteMode::LightRail),
+            "rail" => Some(RouteMode::Rail),
+            "regional_rail" => Some(RouteMode::RegionalRail),
+            _ => None,
+        }
+    }
+
+    /// The GeoJSON `kind` label.
+    fn kind_str(self) -> &'static str {
+        match self {
+            RouteMode::Metro => "metro",
+            RouteMode::Tram => "tram",
+            RouteMode::LightRail => "light_rail",
+            RouteMode::Rail => "rail",
+            RouteMode::RegionalRail => "regional_rail",
+        }
+    }
+
+    /// The driver [`LineKind`] this mode dispatches through, if any. Only metro
+    /// and tram carry driver-owned colour/gtfs conventions; the rail family draws
+    /// generically.
+    fn line_kind(self) -> Option<LineKind> {
+        match self {
+            RouteMode::Metro => Some(LineKind::Metro),
+            RouteMode::Tram => Some(LineKind::Tram),
+            _ => None,
+        }
     }
 }
 
 struct RouteRel {
-    kind: LineKind,
+    mode: RouteMode,
+    /// The OSM `network` (preferred) or `operator` tag — the line's network id.
+    network: String,
     line: String,
     way_ids: Vec<i64>,
+    /// The `route_master` relation id grouping this route's variants, if any.
+    master: Option<i64>,
 }
 
 /// Build the transit-lines FeatureCollection from the OSM clip + (optional) GTFS.
@@ -170,17 +221,60 @@ fn build_transit_lines(
     let node_xy = collect_nodes(clip, &needed_nodes)?;
     let gtfs_routes = read_gtfs_routes(gtfs).unwrap_or_default();
 
-    // Group relations by (kind, line); union their track ways (dedup by id).
-    let mut groups: HashMap<(LineKind, String), Vec<i64>> = HashMap::new();
+    // Group relations into lines. A `route_master` (the master id) collapses its
+    // member route variants into one line; otherwise the line keys on
+    // (network, mode, ref). The grouped line takes its mode/network/ref from the
+    // member relations (route_master itself carries no track).
+    #[derive(PartialEq, Eq, Hash)]
+    enum GroupKey {
+        Master(i64),
+        Fallback(String, RouteMode, String),
+    }
+    struct Line {
+        mode: RouteMode,
+        network: String,
+        line: String,
+        way_ids: Vec<i64>,
+    }
+    let mut groups: HashMap<GroupKey, Line> = HashMap::new();
     for r in rels {
-        groups
-            .entry((r.kind, r.line.clone()))
-            .or_default()
-            .extend(r.way_ids);
+        let key = match r.master {
+            Some(id) => GroupKey::Master(id),
+            None => GroupKey::Fallback(r.network.clone(), r.mode, r.line.clone()),
+        };
+        let entry = groups.entry(key).or_insert_with(|| Line {
+            mode: r.mode,
+            network: r.network.clone(),
+            line: r.line.clone(),
+            way_ids: Vec::new(),
+        });
+        // The collapsed line's identity must not depend on member iteration
+        // order: if a (malformed) master gathers members that disagree on
+        // mode/ref/network, take the lexicographically smallest identity so the
+        // merge is deterministic build-to-build. Uniform real masters (every
+        // member shares one identity) are unaffected.
+        let cur = (
+            entry.mode.kind_str(),
+            entry.line.as_str(),
+            entry.network.as_str(),
+        );
+        let new = (r.mode.kind_str(), r.line.as_str(), r.network.as_str());
+        if new < cur {
+            entry.mode = r.mode;
+            entry.line = r.line.clone();
+            entry.network = r.network.clone();
+        }
+        entry.way_ids.extend(r.way_ids);
     }
 
     let mut features = Vec::new();
-    for ((kind, line), way_ids) in groups {
+    for line in groups.into_values() {
+        let Line {
+            mode,
+            network,
+            line,
+            way_ids,
+        } = line;
         let mut seen = HashSet::new();
         let mut members = Vec::new();
         for w in way_ids {
@@ -202,24 +296,33 @@ fn build_transit_lines(
             continue;
         }
 
-        let gkey = driver.gtfs_key(kind, &line);
-        let g = gtfs_routes.get(&gkey);
-        let route = format!(
-            "{}{}",
-            driver.route_id_prefix(),
-            g.map(|r| r.id.clone()).unwrap_or_else(|| gkey.clone())
-        );
-        let color = match kind {
-            LineKind::Metro => Some(
+        // Identity (ADR 0029). A line that joins a routable feed keeps its
+        // feed/gtfsId-style id (`<prefix><gtfs route id>`) and `routable: true`;
+        // an overlay-only line (geometry but no in-scope timetable) gets an
+        // OSM-derived `OSM:<network>:<ref>` id and `routable: false`.
+        let line_kind = mode.line_kind();
+        let gkey = line_kind.map(|k| driver.gtfs_key(k, &line));
+        let g = gkey.as_ref().and_then(|k| gtfs_routes.get(k));
+        let (route, routable) = match (g, &gkey) {
+            (Some(r), _) => (format!("{}{}", driver.route_id_prefix(), r.id), true),
+            _ => (format!("OSM:{network}:{line}"), false),
+        };
+        // Metro keeps the driver colour; every other mode draws null (tram's
+        // original behaviour, extended to the rail family).
+        let color = match line_kind {
+            Some(LineKind::Metro) => Some(
                 g.and_then(|r| (!r.color.is_empty()).then(|| format!("#{}", r.color)))
                     .unwrap_or_else(|| driver.metro_color(&line).to_string()),
             ),
-            LineKind::Tram => None,
+            _ => None,
         };
 
         features.push(json!({
             "type": "Feature",
-            "properties": { "kind": line_kind_str(kind), "route": route, "line": line, "color": color },
+            "properties": {
+                "kind": mode.kind_str(), "route": route, "line": line,
+                "color": color, "network": network, "routable": routable,
+            },
             "geometry": { "type": "MultiLineString", "coordinates": members },
         }));
     }
@@ -228,36 +331,62 @@ fn build_transit_lines(
     Ok(json!({ "type": "FeatureCollection", "features": features }))
 }
 
-/// Pass 1: the driver-owned `route=subway|tram` relations with a ref, and their
-/// track-way members (members whose role doesn't start with `platform`).
+/// Pass 1: the driver-owned route relations in the widened set (ADR 0029,
+/// `route=subway|tram|light_rail|rail|regional_rail`) with a ref, their track-way
+/// members (members whose role doesn't start with `platform`), and the
+/// `route_master` that groups each route's variants.
+///
+/// Two passes over the clip: first map each member route relation to its
+/// `route_master`, then read the route relations and attach that master. The
+/// network is the OSM `network` tag, falling back to `operator`. Malformed or
+/// out-of-scope relations are skipped fail-soft (panic-free on odd OSM).
 fn collect_route_relations(
     clip: &Path,
     driver: &dyn TransitOverlayDriver,
 ) -> anyhow::Result<Vec<RouteRel>> {
+    // route relation id -> the route_master grouping it.
+    let mut master_of: HashMap<i64, i64> = HashMap::new();
+    ElementReader::from_path(clip)?.for_each(|el| {
+        if let Element::Relation(rel) = el
+            && rel.tags().any(|(k, v)| k == "type" && v == "route_master")
+        {
+            let master = rel.id();
+            for m in rel.members() {
+                if m.member_type == osmpbf::RelMemberType::Relation {
+                    master_of.insert(m.member_id, master);
+                }
+            }
+        }
+    })?;
+
     let mut out = Vec::new();
     ElementReader::from_path(clip)?.for_each(|el| {
         if let Element::Relation(rel) = el {
             let mut route = None;
             let mut line = None;
             let mut operator = None;
+            let mut network = None;
             for (k, v) in rel.tags() {
                 match k {
                     "route" => route = Some(v.to_string()),
                     "ref" => line = Some(v.to_string()),
                     "operator" => operator = Some(v.to_string()),
+                    "network" => network = Some(v.to_string()),
                     _ => {}
                 }
             }
             let (Some(route), Some(line)) = (route, line) else {
                 return;
             };
-            if operator.as_deref() != Some(driver.operator()) || line.is_empty() {
+            // Scope to the driver's network (matched on either tag) — keeps a
+            // region's overlay to its own operator while widening route modes.
+            let owned = operator.as_deref() == Some(driver.operator())
+                || network.as_deref() == Some(driver.operator());
+            if !owned || line.is_empty() {
                 return;
             }
-            let kind = match route.as_str() {
-                "subway" if driver.is_metro_line(&line) => LineKind::Metro,
-                "tram" => LineKind::Tram,
-                _ => return,
+            let Some(mode) = RouteMode::from_osm(&route, &line, driver) else {
+                return;
             };
             let way_ids: Vec<i64> = rel
                 .members()
@@ -269,9 +398,11 @@ fn collect_route_relations(
                 .collect();
             if !way_ids.is_empty() {
                 out.push(RouteRel {
-                    kind,
+                    mode,
+                    network: network.or(operator).unwrap_or_default(),
                     line,
                     way_ids,
+                    master: master_of.get(&rel.id()).copied(),
                 });
             }
         }
@@ -358,15 +489,22 @@ fn read_gtfs_routes(gtfs: &Path) -> anyhow::Result<HashMap<String, GtfsRoute>> {
     Ok(out)
 }
 
-/// Metro first (A, B, C), then trams ascending by number.
+/// Metro first (A, B, C), then every other mode (tram + the rail family)
+/// ascending by numeric ref, ties broken by the raw ref, then `kind` and
+/// `network` as final tiebreakers so a multi-network or mixed-mode region with
+/// two lines sharing a ref still sorts to a total order (deterministic bytes,
+/// ADR 0029). Rome (single-network, unique refs) keeps its original order — its
+/// keys never collide, so the trailing tiebreakers never fire.
 fn sort_metro_first(features: &mut [Value]) {
     features.sort_by(|a, b| {
         let key = |f: &Value| {
-            let kind = f["properties"]["kind"].as_str().unwrap_or("");
-            let line = f["properties"]["line"].as_str().unwrap_or("").to_string();
-            let is_tram = kind == "tram";
+            let p = &f["properties"];
+            let kind = p["kind"].as_str().unwrap_or("").to_string();
+            let line = p["line"].as_str().unwrap_or("").to_string();
+            let network = p["network"].as_str().unwrap_or("").to_string();
+            let is_not_metro = kind != "metro";
             let num = line.parse::<i64>().unwrap_or(i64::MAX);
-            (is_tram, num, line)
+            (is_not_metro, num, line, kind, network)
         };
         key(a).cmp(&key(b))
     });
@@ -1241,5 +1379,841 @@ mod tests {
                 "stop still covered after the WGS84 round trip"
             );
         }
+    }
+
+    // ── transit-lines (multi-region generalization, ADR 0029) ────────────────
+
+    /// The driver every transit-lines build test runs through (Rome/ATAC).
+    fn rome_driver() -> std::sync::Arc<dyn TransitOverlayDriver> {
+        overlay_driver("italy", "rome").unwrap()
+    }
+
+    /// A GTFS zip with `routes.txt` rows `(route_id, short_name, type, color)`.
+    fn write_gtfs(path: &Path, rows: &[(&str, &str, &str, &str)]) {
+        use std::io::Write;
+        let f = std::fs::File::create(path).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        z.start_file::<_, ()>("routes.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        let mut text = String::from("route_id,route_short_name,route_type,route_color\n");
+        for (id, short, ty, color) in rows {
+            text.push_str(&format!("{id},{short},{ty},{color}\n"));
+        }
+        z.write_all(text.as_bytes()).unwrap();
+        z.finish().unwrap();
+    }
+
+    /// Look up a feature by its `line` ref.
+    fn feature_for<'a>(fc: &'a Value, line: &str) -> Option<&'a Value> {
+        fc["features"]
+            .as_array()?
+            .iter()
+            .find(|f| f["properties"]["line"] == json!(line))
+    }
+
+    /// The ordered list of `line` refs in the FeatureCollection.
+    fn line_order(fc: &Value) -> Vec<String> {
+        fc["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["properties"]["line"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// A `route=subway` metro line (A/B/C) builds with the GTFS id + colour and
+    /// the additive `network`/`routable` identity props — locking the Rome shape.
+    #[test]
+    fn metro_line_keeps_gtfs_id_colour_and_is_routable() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[("MEA", "MEA", "1", "E27439")]);
+
+        let mut osm = OsmBuilder::new();
+        let n1 = osm.node(41.90, 12.49, &[]);
+        let n2 = osm.node(41.91, 12.50, &[]);
+        let n3 = osm.node(41.92, 12.51, &[]);
+        let w1 = osm.way(&[n1, n2]);
+        let w2 = osm.way(&[n2, n3]);
+        osm.relation(
+            &[("route", "subway"), ("ref", "A"), ("operator", "ATAC")],
+            &[(Member::Way, w1, ""), (Member::Way, w2, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        let f = feature_for(&fc, "A").unwrap();
+        assert_eq!(f["properties"]["kind"], json!("metro"));
+        assert_eq!(f["properties"]["route"], json!("ATAC:MEA"));
+        assert_eq!(f["properties"]["color"], json!("#E27439"));
+        assert_eq!(f["properties"]["network"], json!("ATAC"));
+        assert_eq!(f["properties"]["routable"], json!(true));
+        // Two ways unioned into one MultiLineString.
+        assert_eq!(
+            f["geometry"]["coordinates"].as_array().unwrap().len(),
+            2,
+            "both track ways unioned into the line"
+        );
+    }
+
+    /// A tram line: null colour, GTFS id, routable when present in the feed —
+    /// matching the original tram behaviour exactly.
+    #[test]
+    fn tram_line_has_null_colour_and_gtfs_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[("R8", "8", "0", "")]);
+
+        let mut osm = OsmBuilder::new();
+        let a = osm.node(41.90, 12.49, &[]);
+        let b = osm.node(41.91, 12.50, &[]);
+        let w = osm.way(&[a, b]);
+        osm.relation(
+            &[("route", "tram"), ("ref", "8"), ("operator", "ATAC")],
+            &[(Member::Way, w, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        let f = feature_for(&fc, "8").unwrap();
+        assert_eq!(f["properties"]["kind"], json!("tram"));
+        assert_eq!(f["properties"]["route"], json!("ATAC:R8"));
+        assert_eq!(f["properties"]["color"], Value::Null);
+        assert_eq!(f["properties"]["routable"], json!(true));
+    }
+
+    /// The widened route set (ADR 0029) now includes light_rail and
+    /// regional_rail. With no in-scope feed row they draw as generic overlay-only
+    /// lines: null colour, `routable: false`, and an `OSM:<network>:<ref>` id.
+    #[test]
+    fn light_rail_and_regional_rail_are_included_as_overlay_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[]); // empty feed — nothing routable
+
+        let mut osm = OsmBuilder::new();
+        let a = osm.node(41.90, 12.49, &[]);
+        let b = osm.node(41.91, 12.50, &[]);
+        let c = osm.node(41.92, 12.51, &[]);
+        let lw = osm.way(&[a, b]);
+        let rw = osm.way(&[b, c]);
+        osm.relation(
+            &[("route", "light_rail"), ("ref", "TVA"), ("network", "ATAC")],
+            &[(Member::Way, lw, "")],
+        );
+        osm.relation(
+            &[
+                ("route", "regional_rail"),
+                ("ref", "FL1"),
+                ("operator", "ATAC"),
+            ],
+            &[(Member::Way, rw, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        let lr = feature_for(&fc, "TVA").unwrap();
+        assert_eq!(lr["properties"]["kind"], json!("light_rail"));
+        assert_eq!(lr["properties"]["route"], json!("OSM:ATAC:TVA"));
+        assert_eq!(lr["properties"]["color"], Value::Null);
+        assert_eq!(lr["properties"]["network"], json!("ATAC"));
+        assert_eq!(lr["properties"]["routable"], json!(false));
+
+        let rr = feature_for(&fc, "FL1").unwrap();
+        assert_eq!(rr["properties"]["kind"], json!("regional_rail"));
+        assert_eq!(rr["properties"]["route"], json!("OSM:ATAC:FL1"));
+        assert_eq!(rr["properties"]["routable"], json!(false));
+    }
+
+    /// A `route_master` collapses its member route variants into a single line,
+    /// unioning the ways from every variant (shared way deduped once).
+    #[test]
+    fn route_master_collapses_member_variants_into_one_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[("MEC", "MEC", "1", "008456")]);
+
+        let mut osm = OsmBuilder::new();
+        let n1 = osm.node(41.90, 12.49, &[]);
+        let n2 = osm.node(41.91, 12.50, &[]);
+        let n3 = osm.node(41.92, 12.51, &[]);
+        let shared = osm.way(&[n1, n2]); // carried by both directions
+        let extra = osm.way(&[n2, n3]); // only the return direction
+        // Two direction route relations of line C.
+        let fwd = osm.relation(
+            &[("route", "subway"), ("ref", "C"), ("operator", "ATAC")],
+            &[(Member::Way, shared, "")],
+        );
+        let bwd = osm.relation(
+            &[("route", "subway"), ("ref", "C"), ("operator", "ATAC")],
+            &[(Member::Way, shared, ""), (Member::Way, extra, "")],
+        );
+        osm.relation(
+            &[("type", "route_master"), ("route_master", "subway")],
+            &[(Member::Relation, fwd, ""), (Member::Relation, bwd, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        let cs: Vec<&Value> = fc["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["properties"]["line"] == json!("C"))
+            .collect();
+        assert_eq!(cs.len(), 1, "the two C variants collapse to one line");
+        // Shared way deduped: exactly the 2 distinct ways, not 3.
+        assert_eq!(
+            cs[0]["geometry"]["coordinates"].as_array().unwrap().len(),
+            2,
+            "shared way counted once across both directions"
+        );
+    }
+
+    /// Metro sorts before the rail family / trams, then numeric — the additive
+    /// rail modes don't disturb the metro-first order.
+    #[test]
+    fn metro_first_order_holds_with_widened_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[("MEB", "MEB", "1", "0570B5")]);
+
+        let mut osm = OsmBuilder::new();
+        let mk = |osm: &mut OsmBuilder, lon: f64| {
+            let a = osm.node(41.90, lon, &[]);
+            let b = osm.node(41.91, lon + 0.01, &[]);
+            osm.way(&[a, b])
+        };
+        let wt = mk(&mut osm, 12.40);
+        let wm = mk(&mut osm, 12.50);
+        let wr = mk(&mut osm, 12.60);
+        osm.relation(
+            &[("route", "tram"), ("ref", "2"), ("operator", "ATAC")],
+            &[(Member::Way, wt, "")],
+        );
+        osm.relation(
+            &[("route", "subway"), ("ref", "B"), ("operator", "ATAC")],
+            &[(Member::Way, wm, "")],
+        );
+        osm.relation(
+            &[
+                ("route", "regional_rail"),
+                ("ref", "FL3"),
+                ("operator", "ATAC"),
+            ],
+            &[(Member::Way, wr, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        // Metro B first; then the non-metro refs sorted numerically ("2" < "FL3").
+        assert_eq!(line_order(&fc), ["B", "2", "FL3"]);
+    }
+
+    /// Fail-soft: a relation with no track ways, a foreign operator, and a
+    /// route mode outside the set are all skipped without panicking, and an
+    /// unresolvable-but-valid line still emits as a generic line.
+    #[test]
+    fn malformed_and_out_of_scope_relations_are_skipped_fail_soft() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[]);
+
+        let mut osm = OsmBuilder::new();
+        let a = osm.node(41.90, 12.49, &[]);
+        let b = osm.node(41.91, 12.50, &[]);
+        let w = osm.way(&[a, b]);
+        // No way members at all (only a platform-role node) → skipped.
+        osm.relation(
+            &[("route", "subway"), ("ref", "A"), ("operator", "ATAC")],
+            &[(Member::Node, a, "platform")],
+        );
+        // Foreign operator → skipped.
+        osm.relation(
+            &[("route", "tram"), ("ref", "99"), ("operator", "OTHER")],
+            &[(Member::Way, w, "")],
+        );
+        // Out-of-set route mode (bus) → skipped.
+        osm.relation(
+            &[("route", "bus"), ("ref", "100"), ("operator", "ATAC")],
+            &[(Member::Way, w, "")],
+        );
+        // A valid in-scope line with no feed row → emits as a generic line.
+        osm.relation(
+            &[("route", "tram"), ("ref", "19"), ("operator", "ATAC")],
+            &[(Member::Way, w, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        let lines = line_order(&fc);
+        assert_eq!(lines, ["19"], "only the valid in-scope line survives");
+        let f = feature_for(&fc, "19").unwrap();
+        assert_eq!(f["properties"]["route"], json!("OSM:ATAC:19"));
+        assert_eq!(f["properties"]["routable"], json!(false));
+    }
+
+    /// A relation tagged `ref=B` but with empty `ref` is dropped, and a clip with
+    /// junk bytes surfaces an error rather than panicking.
+    #[test]
+    fn empty_ref_dropped_and_junk_clip_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[]);
+
+        let mut osm = OsmBuilder::new();
+        let a = osm.node(41.90, 12.49, &[]);
+        let b = osm.node(41.91, 12.50, &[]);
+        let w = osm.way(&[a, b]);
+        osm.relation(
+            &[("route", "tram"), ("ref", ""), ("operator", "ATAC")],
+            &[(Member::Way, w, "")],
+        );
+        osm.write(&clip);
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        assert!(
+            fc["features"].as_array().unwrap().is_empty(),
+            "empty-ref line dropped"
+        );
+
+        let junk = dir.path().join("junk.osm.pbf");
+        std::fs::write(&junk, b"not a pbf at all").unwrap();
+        assert!(build_transit_lines(&junk, &gtfs, rome_driver().as_ref()).is_err());
+    }
+
+    /// `route=rail` maps to the `rail` mode and, with no in-scope feed row, draws
+    /// as an overlay-only generic line (null colour, `routable:false`, OSM id) —
+    /// the one widened mode the other tests don't exercise.
+    #[test]
+    fn route_rail_draws_as_overlay_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[]);
+
+        let mut osm = OsmBuilder::new();
+        let a = osm.node(41.90, 12.49, &[]);
+        let b = osm.node(41.91, 12.50, &[]);
+        let w = osm.way(&[a, b]);
+        osm.relation(
+            &[("route", "rail"), ("ref", "FR1"), ("operator", "ATAC")],
+            &[(Member::Way, w, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        let f = feature_for(&fc, "FR1").unwrap();
+        assert_eq!(f["properties"]["kind"], json!("rail"));
+        assert_eq!(f["properties"]["route"], json!("OSM:ATAC:FR1"));
+        assert_eq!(f["properties"]["color"], Value::Null);
+        assert_eq!(f["properties"]["routable"], json!(false));
+    }
+
+    /// A `route=subway` relation whose ref is NOT a driver metro line hits the
+    /// early `is_metro_line` gate in `RouteMode::from_osm` and is dropped — it
+    /// never becomes a generic line.
+    #[test]
+    fn non_metro_subway_ref_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[]);
+
+        let mut osm = OsmBuilder::new();
+        let a = osm.node(41.90, 12.49, &[]);
+        let b = osm.node(41.91, 12.50, &[]);
+        let w = osm.way(&[a, b]);
+        // "Z" is not an ATAC metro line, so the subway arm yields None.
+        osm.relation(
+            &[("route", "subway"), ("ref", "Z"), ("operator", "ATAC")],
+            &[(Member::Way, w, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        assert!(
+            fc["features"].as_array().unwrap().is_empty(),
+            "a non-metro subway ref is gated out, not drawn as a generic line"
+        );
+    }
+
+    /// Fallback `(network, mode, ref)` grouping with NO `route_master`: two same-
+    /// ref same-operator variants collapse to one feature (ways deduped); two
+    /// different refs stay as separate features.
+    #[test]
+    fn fallback_grouping_collapses_same_ref_keeps_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[]);
+
+        let mut osm = OsmBuilder::new();
+        let n1 = osm.node(41.90, 12.49, &[]);
+        let n2 = osm.node(41.91, 12.50, &[]);
+        let n3 = osm.node(41.92, 12.51, &[]);
+        let shared = osm.way(&[n1, n2]); // both ref-8 variants carry this
+        let extra = osm.way(&[n2, n3]); // only the second variant
+        let other = osm.way(&[n1, n3]); // ref 14
+        // Two ref-8 tram variants, no route_master → fallback collapse.
+        osm.relation(
+            &[("route", "tram"), ("ref", "8"), ("operator", "ATAC")],
+            &[(Member::Way, shared, "")],
+        );
+        osm.relation(
+            &[("route", "tram"), ("ref", "8"), ("operator", "ATAC")],
+            &[(Member::Way, shared, ""), (Member::Way, extra, "")],
+        );
+        // A distinct ref stays separate.
+        osm.relation(
+            &[("route", "tram"), ("ref", "14"), ("operator", "ATAC")],
+            &[(Member::Way, other, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        assert_eq!(line_order(&fc), ["8", "14"], "two lines, ref 8 collapsed");
+        let eight = feature_for(&fc, "8").unwrap();
+        assert_eq!(
+            eight["geometry"]["coordinates"].as_array().unwrap().len(),
+            2,
+            "shared way deduped: 2 distinct ways across both variants"
+        );
+    }
+
+    /// Fallback grouping keys on the network too: same ref + mode under two
+    /// different networks stay as separate features (no cross-network merge).
+    #[test]
+    fn fallback_grouping_keeps_distinct_networks_separate() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(&gtfs, &[]);
+
+        let mut osm = OsmBuilder::new();
+        let n1 = osm.node(41.90, 12.49, &[]);
+        let n2 = osm.node(41.91, 12.50, &[]);
+        let n3 = osm.node(41.92, 12.51, &[]);
+        let wa = osm.way(&[n1, n2]);
+        let wb = osm.way(&[n2, n3]);
+        // Same ref "5", same mode; the driver owns both because operator==ATAC,
+        // but the recorded network differs (network tag preferred over operator).
+        osm.relation(
+            &[
+                ("route", "tram"),
+                ("ref", "5"),
+                ("operator", "ATAC"),
+                ("network", "ATAC"),
+            ],
+            &[(Member::Way, wa, "")],
+        );
+        osm.relation(
+            &[
+                ("route", "tram"),
+                ("ref", "5"),
+                ("operator", "ATAC"),
+                ("network", "ATAC-Nord"),
+            ],
+            &[(Member::Way, wb, "")],
+        );
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        let fives: Vec<&Value> = fc["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["properties"]["line"] == json!("5"))
+            .collect();
+        assert_eq!(
+            fives.len(),
+            2,
+            "distinct networks stay as separate features"
+        );
+        let nets: HashSet<&str> = fives
+            .iter()
+            .map(|f| f["properties"]["network"].as_str().unwrap())
+            .collect();
+        assert_eq!(nets, HashSet::from(["ATAC", "ATAC-Nord"]));
+    }
+
+    /// Colliding sort keys (two networks sharing a ref+mode) sort to a stable
+    /// total order regardless of the HashMap's run-to-run iteration order — the
+    /// byte-reproducibility guard for the multi-network case (ADR 0029).
+    #[test]
+    fn sort_is_total_under_ref_collisions() {
+        let mk = |kind: &str, line: &str, network: &str| json!({"properties":{"kind":kind,"line":line,"network":network}});
+        // Same ref "5", same mode, two networks — the pre-2026 key collides.
+        let mut a = vec![
+            mk("tram", "5", "B-NET"),
+            mk("tram", "5", "A-NET"),
+            mk("metro", "A", "A-NET"),
+        ];
+        let mut b = vec![
+            mk("metro", "A", "A-NET"),
+            mk("tram", "5", "A-NET"),
+            mk("tram", "5", "B-NET"),
+        ];
+        sort_metro_first(&mut a);
+        sort_metro_first(&mut b);
+        assert_eq!(a, b, "the order is independent of pre-sort arrangement");
+        // metro first, then ref 5 with A-NET before B-NET (network tiebreaker).
+        let nets: Vec<&str> = a
+            .iter()
+            .map(|f| f["properties"]["network"].as_str().unwrap())
+            .collect();
+        assert_eq!(nets, ["A-NET", "A-NET", "B-NET"]);
+    }
+
+    /// A `route_master` whose members disagree on ref/mode (malformed OSM)
+    /// collapses deterministically to the lexicographically smallest identity
+    /// rather than first-writer-wins, so its single feature is reproducible.
+    #[test]
+    fn mixed_master_collapses_deterministically() {
+        let build = |order_swapped: bool| {
+            let dir = tempfile::tempdir().unwrap();
+            let clip = dir.path().join("clip.osm.pbf");
+            let gtfs = dir.path().join("g.zip");
+            write_gtfs(&gtfs, &[]);
+
+            let mut osm = OsmBuilder::new();
+            let n1 = osm.node(41.90, 12.49, &[]);
+            let n2 = osm.node(41.91, 12.50, &[]);
+            let n3 = osm.node(41.92, 12.51, &[]);
+            let w7 = osm.way(&[n1, n2]);
+            let wa = osm.way(&[n2, n3]);
+            // A tram ref "7" and a metro ref "A" wrongly share one master.
+            let tram = osm.relation(
+                &[("route", "tram"), ("ref", "7"), ("operator", "ATAC")],
+                &[(Member::Way, w7, "")],
+            );
+            let metro = osm.relation(
+                &[("route", "subway"), ("ref", "A"), ("operator", "ATAC")],
+                &[(Member::Way, wa, "")],
+            );
+            let members = if order_swapped {
+                vec![(Member::Relation, metro, ""), (Member::Relation, tram, "")]
+            } else {
+                vec![(Member::Relation, tram, ""), (Member::Relation, metro, "")]
+            };
+            osm.relation(
+                &[("type", "route_master"), ("route_master", "subway")],
+                &members,
+            );
+            osm.write(&clip);
+
+            let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+            let feats = fc["features"].as_array().unwrap();
+            assert_eq!(
+                feats.len(),
+                1,
+                "the mixed master still collapses to one line"
+            );
+            (
+                feats[0]["properties"]["kind"].as_str().unwrap().to_string(),
+                feats[0]["properties"]["line"].as_str().unwrap().to_string(),
+            )
+        };
+        // ("metro","A") < ("tram","7") lexicographically, so metro/A wins either
+        // way the members were ordered.
+        assert_eq!(build(false), ("metro".into(), "A".into()));
+        assert_eq!(build(true), ("metro".into(), "A".into()));
+    }
+
+    /// Golden property-snapshot of a Rome-shaped nine-line build: the three metro
+    /// lines (A/B/C, GTFS ids + colours, routable) plus six trams, in metro-first
+    /// order. Guards the load-bearing "nine lines byte-stable" claim against any
+    /// grouping/ordering/colour/identity regression (ADR 0029). Synthetic clip —
+    /// one way per line keeps geometry out of the property assertions.
+    #[test]
+    fn rome_shaped_nine_lines_property_golden() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+        let gtfs = dir.path().join("g.zip");
+        write_gtfs(
+            &gtfs,
+            &[
+                ("MEA", "MEA", "1", "E27439"),
+                ("MEB", "MEB", "1", "0570B5"),
+                ("MEC", "MEC", "1", "008456"),
+                ("R2", "2", "0", ""),
+                ("R3", "3", "0", ""),
+                ("R5", "5", "0", ""),
+                ("R8", "8", "0", ""),
+                ("R14", "14", "0", ""),
+                ("R19", "19", "0", ""),
+            ],
+        );
+
+        // The driver maps metro refs A/B/C → gtfs keys MEA/MEB/MEC.
+        let metros = [("A", "subway"), ("B", "subway"), ("C", "subway")];
+        let trams = [
+            ("2", "tram"),
+            ("3", "tram"),
+            ("5", "tram"),
+            ("8", "tram"),
+            ("14", "tram"),
+            ("19", "tram"),
+        ];
+
+        let mut osm = OsmBuilder::new();
+        let mut lon = 12.40;
+        let mut add = |osm: &mut OsmBuilder, refv: &str, route: &str| {
+            let a = osm.node(41.90, lon, &[]);
+            let b = osm.node(41.91, lon + 0.01, &[]);
+            lon += 0.02;
+            let w = osm.way(&[a, b]);
+            osm.relation(
+                &[("route", route), ("ref", refv), ("operator", "ATAC")],
+                &[(Member::Way, w, "")],
+            );
+        };
+        for (refv, route) in metros.iter().chain(trams.iter()) {
+            add(&mut osm, refv, route);
+        }
+        osm.write(&clip);
+
+        let fc = build_transit_lines(&clip, &gtfs, rome_driver().as_ref()).unwrap();
+        // Snapshot the identity props of every feature in emit order.
+        let shape: Vec<Value> = fc["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                let p = &f["properties"];
+                json!([p["kind"], p["line"], p["route"], p["color"], p["routable"]])
+            })
+            .collect();
+        let expected = json!([
+            ["metro", "A", "ATAC:MEA", "#E27439", true],
+            ["metro", "B", "ATAC:MEB", "#0570B5", true],
+            ["metro", "C", "ATAC:MEC", "#008456", true],
+            ["tram", "2", "ATAC:R2", null, true],
+            ["tram", "3", "ATAC:R3", null, true],
+            ["tram", "5", "ATAC:R5", null, true],
+            ["tram", "8", "ATAC:R8", null, true],
+            ["tram", "14", "ATAC:R14", null, true],
+            ["tram", "19", "ATAC:R19", null, true],
+        ]);
+        assert_eq!(Value::Array(shape), expected, "nine-line shape is stable");
+        // Every feature carries the additive network prop.
+        assert!(
+            fc["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| f["properties"]["network"] == json!("ATAC")),
+        );
+    }
+
+    // ── Minimal hand-rolled .osm.pbf writer (test fixtures only) ──────────────
+    //
+    // `osmpbf` is read-only, so we encode the protobuf wire format by hand: an
+    // OSMHeader blob then one OSMData blob carrying a PrimitiveBlock with plain
+    // Nodes/Ways/Relations (with tags + members). Just enough for the overlay
+    // reader's passes; coords use the default granularity (100).
+
+    #[derive(Clone, Copy)]
+    enum Member {
+        Node,
+        Way,
+        Relation,
+    }
+
+    /// Accumulates nodes/ways/relations and a shared string table, then encodes a
+    /// single-block `.osm.pbf`.
+    struct OsmBuilder {
+        strings: Vec<String>,
+        nodes: Vec<Vec<u8>>,
+        ways: Vec<Vec<u8>>,
+        relations: Vec<Vec<u8>>,
+        next_id: i64,
+    }
+
+    impl OsmBuilder {
+        fn new() -> Self {
+            OsmBuilder {
+                strings: vec![String::new()], // index 0 is the reserved blank
+                nodes: Vec::new(),
+                ways: Vec::new(),
+                relations: Vec::new(),
+                next_id: 1,
+            }
+        }
+
+        fn intern(&mut self, s: &str) -> u32 {
+            if let Some(i) = self.strings.iter().position(|x| x == s) {
+                return i as u32;
+            }
+            self.strings.push(s.to_string());
+            (self.strings.len() - 1) as u32
+        }
+
+        fn alloc(&mut self) -> i64 {
+            let id = self.next_id;
+            self.next_id += 1;
+            id
+        }
+
+        /// Packed (key,val) string-id pairs for a tag list → (keys, vals).
+        fn tag_cols(&mut self, tags: &[(&str, &str)]) -> (Vec<u64>, Vec<u64>) {
+            let mut keys = Vec::new();
+            let mut vals = Vec::new();
+            for (k, v) in tags {
+                keys.push(self.intern(k) as u64);
+                vals.push(self.intern(v) as u64);
+            }
+            (keys, vals)
+        }
+
+        fn node(&mut self, lat: f64, lon: f64, tags: &[(&str, &str)]) -> i64 {
+            let id = self.alloc();
+            let (keys, vals) = self.tag_cols(tags);
+            let mut n = Vec::new();
+            field_varint(&mut n, 1, zigzag(id));
+            if !keys.is_empty() {
+                field_bytes(&mut n, 2, &packed(&keys));
+                field_bytes(&mut n, 3, &packed(&vals));
+            }
+            field_varint(&mut n, 8, zigzag(stored(lat)));
+            field_varint(&mut n, 9, zigzag(stored(lon)));
+            self.nodes.push(n);
+            id
+        }
+
+        fn way(&mut self, refs: &[i64]) -> i64 {
+            let id = self.alloc();
+            let mut w = Vec::new();
+            field_varint(&mut w, 1, id as u64);
+            let mut delta = Vec::new();
+            let mut prev = 0i64;
+            for &r in refs {
+                delta.push(zigzag(r - prev));
+                prev = r;
+            }
+            field_bytes(&mut w, 8, &packed(&delta));
+            self.ways.push(w);
+            id
+        }
+
+        fn relation(&mut self, tags: &[(&str, &str)], members: &[(Member, i64, &str)]) -> i64 {
+            let id = self.alloc();
+            let (keys, vals) = self.tag_cols(tags);
+            let roles: Vec<u64> = members
+                .iter()
+                .map(|(_, _, role)| self.intern(role) as u64)
+                .collect();
+            let mut rel = Vec::new();
+            field_varint(&mut rel, 1, id as u64);
+            if !keys.is_empty() {
+                field_bytes(&mut rel, 2, &packed(&keys));
+                field_bytes(&mut rel, 3, &packed(&vals));
+            }
+            field_bytes(&mut rel, 8, &packed(&roles)); // roles_sid
+            let mut memids = Vec::new();
+            let mut prev = 0i64;
+            for (_, mid, _) in members {
+                memids.push(zigzag(mid - prev));
+                prev = *mid;
+            }
+            field_bytes(&mut rel, 9, &packed(&memids));
+            let types: Vec<u64> = members
+                .iter()
+                .map(|(t, _, _)| match t {
+                    Member::Node => 0,
+                    Member::Way => 1,
+                    Member::Relation => 2,
+                })
+                .collect();
+            field_bytes(&mut rel, 10, &packed(&types));
+            self.relations.push(rel);
+            id
+        }
+
+        fn write(&self, path: &Path) {
+            let mut stringtable = Vec::new();
+            for s in &self.strings {
+                field_bytes(&mut stringtable, 1, s.as_bytes());
+            }
+            let mut group = Vec::new();
+            for n in &self.nodes {
+                field_bytes(&mut group, 1, n);
+            }
+            for w in &self.ways {
+                field_bytes(&mut group, 3, w);
+            }
+            for r in &self.relations {
+                field_bytes(&mut group, 4, r);
+            }
+            let mut block = Vec::new();
+            field_bytes(&mut block, 1, &stringtable);
+            field_bytes(&mut block, 2, &group);
+
+            let mut header = Vec::new();
+            field_bytes(&mut header, 4, b"OsmSchema-V0.6");
+
+            let mut out = Vec::new();
+            push_blob(&mut out, "OSMHeader", &header);
+            push_blob(&mut out, "OSMData", &block);
+            std::fs::write(path, out).unwrap();
+        }
+    }
+
+    fn varint(out: &mut Vec<u8>, mut v: u64) {
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                break;
+            }
+            out.push(b | 0x80);
+        }
+    }
+
+    fn zigzag(v: i64) -> u64 {
+        ((v << 1) ^ (v >> 63)) as u64
+    }
+
+    fn field_bytes(out: &mut Vec<u8>, field: u32, data: &[u8]) {
+        varint(out, ((field as u64) << 3) | 2);
+        varint(out, data.len() as u64);
+        out.extend_from_slice(data);
+    }
+
+    fn field_varint(out: &mut Vec<u8>, field: u32, v: u64) {
+        varint(out, (field as u64) << 3);
+        varint(out, v);
+    }
+
+    fn packed(values: &[u64]) -> Vec<u8> {
+        let mut b = Vec::new();
+        for &v in values {
+            varint(&mut b, v);
+        }
+        b
+    }
+
+    fn stored(deg: f64) -> i64 {
+        (deg / 1e-7).round() as i64
+    }
+
+    fn push_blob(out: &mut Vec<u8>, blob_type: &str, payload: &[u8]) {
+        let mut blob = Vec::new();
+        field_bytes(&mut blob, 1, payload); // raw
+
+        let mut blob_header = Vec::new();
+        field_bytes(&mut blob_header, 1, blob_type.as_bytes()); // type
+        field_varint(&mut blob_header, 3, blob.len() as u64); // datasize
+
+        out.extend_from_slice(&(blob_header.len() as u32).to_be_bytes());
+        out.extend_from_slice(&blob_header);
+        out.extend_from_slice(&blob);
     }
 }
