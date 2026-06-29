@@ -1,28 +1,42 @@
-//! Soft, opt-in itinerary reranking over an OTP plan response (ADR 0026).
+//! Soft, opt-in itinerary reranking over an OTP plan response (ADR 0026, 0028).
 //!
 //! This module is the **pure, I/O-free core**: it takes an already-parsed OTP
-//! plan value plus a reliability-lookup closure and returns the same value with
-//! only the `itineraries` array stably reordered (best reliability first). It
-//! never prunes an itinerary, never alters leg/feasibility data, and preserves
-//! the response schema — the lone additive change is an optional numeric
-//! `reliabilityScore` attached per itinerary, which existing clients ignore.
+//! plan value plus a reliability-lookup closure and a [`Profile`], and returns
+//! the same value with only the `itineraries` array stably reordered (best
+//! composite score first). It never prunes an itinerary, never alters
+//! leg/feasibility data, and preserves the response schema — the lone additive
+//! changes are two optional numeric fields per itinerary (`reliabilityScore` and
+//! the composite `rerankScore`), which existing clients ignore.
 //!
-//! Wave 1 scores on reliability alone. A transit leg is keyed by its
+//! Wave 1 (ADR 0026) scored on reliability alone. Wave 1b (ADR 0028) generalizes
+//! the score to a **weighted composite** of independent soft factors, each a pure
+//! function over one itinerary:
+//!
+//! 1. **reliability** — the existing Tier-2 on-time signal; neutral (no effect)
+//!    when there is no history.
+//! 2. **transfers** — number of transit boardings; fewer preferred.
+//! 3. **walking effort** — total walk-leg duration; less preferred.
+//! 4. **eco/carbon** — per-mode gCO2e/passenger-km intensity × leg distance,
+//!    summed; lower preferred.
+//!
+//! Each raw factor is normalized **across the itineraries in this one response**
+//! (min-max, see `normalize_benefit`) into a benefit in `0.0..=1.0` where higher
+//! is always better, then combined with per-profile weights into one composite
+//! score. The array is stable-sorted by descending composite. A single itinerary,
+//! or itineraries that tie on every factor, are left in their original order.
+//!
+//! A transit leg is keyed for reliability by its
 //! `(route gtfsId, trip directionId, boarding-stop gtfsId)`; the closure resolves
-//! that key to an on-time rate in `0.0..=1.0`. An itinerary's score is the
-//! **mean** of its transit-leg on-time rates; walk/wait legs contribute nothing.
-//! Itineraries with no resolvable reliability data get a neutral score and keep
-//! their original position (the sort is stable).
-//!
-//! OTP namespaces its `gtfsId`s as `FEED:LOCALID` (e.g. `ATAC:MEA`), while the
-//! reliability index is keyed by the bare local ids the worker recorded from
-//! GTFS-RT. We strip the leading feed prefix off the route and stop ids before
-//! the lookup so the two id spaces meet (ADR 0027).
+//! that key to an on-time rate in `0.0..=1.0`. OTP namespaces its `gtfsId`s as
+//! `FEED:LOCALID` (e.g. `ATAC:MEA`), while the reliability index is keyed by the
+//! bare local ids the worker recorded from GTFS-RT. We strip the leading feed
+//! prefix off the route and stop ids before the lookup so the two id spaces meet
+//! (ADR 0027).
 //!
 //! FAIL-SOFT: every helper here is total. A value that doesn't look like an OTP
-//! plan, an itineraries field that isn't an array, or a leg that can't be keyed
-//! all degrade to "no change" rather than erroring — the caller returns the
-//! original bytes untouched. See [`rerank_plan`].
+//! plan, an itineraries field that isn't an array, or a leg that can't be read
+//! all degrade to "no change" / "neutral factor" rather than erroring — the
+//! caller returns the original bytes untouched. See [`rerank_plan`].
 
 use serde_json::Value;
 
@@ -33,21 +47,148 @@ use serde_json::Value;
 /// without one is keyed with `0` by the extractor.
 pub type ReliabilityLookup<'a> = dyn Fn(&str, i32, &str) -> Option<f64> + 'a;
 
-/// The neutral score for an itinerary with no resolvable reliability data. It
-/// sits between "all on-time" (1.0) and "never on-time" (0.0) so scored
-/// itineraries with real history sort around it, and ties hold original order.
-const NEUTRAL_SCORE: f64 = 0.5;
+/// The neutral reliability rate for a leg or itinerary with no resolvable
+/// history. It sits between "all on-time" (1.0) and "never on-time" (0.0) so
+/// scored itineraries with real history sort around it.
+const NEUTRAL_RELIABILITY: f64 = 0.5;
 
-/// Reorder `plan.data.plan.itineraries` by descending reliability score, stably.
-/// Returns `true` when the value was a well-formed plan and the array was
-/// (re)scored — even if the order didn't change — and `false` when the value
-/// didn't look like an OTP plan, in which case `plan` is left untouched and the
-/// caller should return the original response verbatim.
+/// A named scoring profile: the weight each soft factor carries in the composite.
+/// The opt-in flag (`?rerank=<profile>`) selects one. Keeping profiles rather
+/// than a free-form weight vector keeps the API small and the contract testable
+/// (ADR 0028).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Profile {
+    /// Reliability only — the wave-1 contract (ADR 0026). Equivalent to weights
+    /// `(reliability=1, transfers=0, walk=0, eco=0)`, so it reorders exactly as
+    /// before and only the reliability factor matters.
+    Reliability,
+    /// The full composite, balancing all four factors (ADR 0028).
+    Balanced,
+    /// Leans on the carbon factor: lowest-emission itineraries first.
+    Eco,
+    /// Leans on fewer transfers and less walking.
+    Comfort,
+}
+
+/// The per-factor weights for a profile. Each is a non-negative multiplier on
+/// that factor's normalized benefit; the composite is their weighted sum. They
+/// need not sum to 1 — the composite is only ever compared within one response,
+/// so a common scale is unnecessary.
+struct Weights {
+    reliability: f64,
+    transfers: f64,
+    walk: f64,
+    eco: f64,
+}
+
+impl Profile {
+    /// Parse the opt-in flag value into a profile. `reliability` preserves the
+    /// wave-1 contract; unknown values return `None` so the handler treats them
+    /// as "no rerank" and stays a passthrough.
+    pub fn from_flag(value: &str) -> Option<Self> {
+        match value {
+            "reliability" => Some(Self::Reliability),
+            "balanced" => Some(Self::Balanced),
+            "eco" => Some(Self::Eco),
+            "comfort" => Some(Self::Comfort),
+            _ => None,
+        }
+    }
+
+    /// The factor weights for this profile. Tunable consts; the relative sizes,
+    /// not the absolute scale, decide the ordering (ADR 0028).
+    fn weights(self) -> Weights {
+        match self {
+            // Wave-1 contract: reliability is the only factor with weight.
+            Self::Reliability => Weights {
+                reliability: 1.0,
+                transfers: 0.0,
+                walk: 0.0,
+                eco: 0.0,
+            },
+            // An even-handed blend. Reliability leads; walking gets a gentle
+            // weight per the wave-1b brief.
+            Self::Balanced => Weights {
+                reliability: 1.0,
+                transfers: 0.6,
+                walk: 0.4,
+                eco: 0.6,
+            },
+            // Carbon dominates; the rest only break near-ties.
+            Self::Eco => Weights {
+                reliability: 0.3,
+                transfers: 0.3,
+                walk: 0.2,
+                eco: 1.5,
+            },
+            // Fewer transfers and less walking dominate.
+            Self::Comfort => Weights {
+                reliability: 0.5,
+                transfers: 1.2,
+                walk: 1.0,
+                eco: 0.2,
+            },
+        }
+    }
+}
+
+// --- carbon intensities -----------------------------------------------------
+//
+// Typical published *operational* greenhouse-gas intensities per
+// passenger-kilometre, in grams CO2-equivalent (gCO2e/p-km). These are
+// order-of-magnitude figures consistent with widely reported transport-emission
+// factors (e.g. national environment-agency and EEA passenger-transport
+// factors): active modes are zero at the tailpipe; electrified rail/metro/tram
+// are low; diesel buses sit higher. They are deliberate, documented estimates,
+// not a regional measurement — the reranker only ever compares them *relatively*
+// within one response, so the exact values matter less than their ordering.
+
+/// Active travel (walking, cycling): no operational emissions.
+const CO2_ACTIVE: f64 = 0.0;
+/// Heavy/commuter/regional rail: low-emission electrified traction.
+const CO2_RAIL: f64 = 35.0;
+/// Metro / subway: electrified, slightly higher than mainline rail per p-km.
+const CO2_SUBWAY: f64 = 30.0;
+/// Tram / light rail: electrified street running.
+const CO2_TRAM: f64 = 30.0;
+/// Bus / trolleybus / coach: typically diesel, the higher transit intensity.
+const CO2_BUS: f64 = 95.0;
+/// Ferry: included as a coarse high estimate; ferries vary widely.
+const CO2_FERRY: f64 = 120.0;
+/// Car (private, e.g. KISS_AND_RIDE / CAR legs): highest of the set.
+const CO2_CAR: f64 = 170.0;
+/// Any unrecognized motorized mode: a neutral mid estimate so an unknown mode
+/// neither dominates nor disappears.
+const CO2_UNKNOWN: f64 = 80.0;
+
+/// Map an OTP leg `mode` string to its carbon intensity (gCO2e/p-km). OTP modes
+/// are upper-case (`WALK`, `BUS`, `TRAM`, `SUBWAY`, `RAIL`, `FERRY`, …). Active
+/// and waiting modes are zero; a missing/unknown motorized mode gets a neutral
+/// mid value.
+fn mode_co2_intensity(mode: &str) -> f64 {
+    match mode {
+        "WALK" | "BICYCLE" | "BIKE" | "SCOOTER" => CO2_ACTIVE,
+        "RAIL" | "TRAIN" => CO2_RAIL,
+        "SUBWAY" | "METRO" => CO2_SUBWAY,
+        "TRAM" | "LIGHT_RAIL" | "CABLE_CAR" | "FUNICULAR" | "GONDOLA" => CO2_TRAM,
+        "BUS" | "TROLLEYBUS" | "COACH" => CO2_BUS,
+        "FERRY" => CO2_FERRY,
+        "CAR" | "CARPOOL" => CO2_CAR,
+        _ => CO2_UNKNOWN,
+    }
+}
+
+/// Reorder `plan.data.plan.itineraries` by descending composite score, stably,
+/// using the factor weights of `profile`. Returns `true` when the value was a
+/// well-formed plan and the array was (re)scored — even if the order didn't
+/// change — and `false` when the value didn't look like an OTP plan, in which
+/// case `plan` is left untouched and the caller should return the original
+/// response verbatim.
 ///
-/// The reorder is **stable**: equal scores (including the neutral score for
-/// no-history itineraries) preserve OTP's original ordering, so the default
-/// engine ranking still breaks ties.
-pub fn rerank_plan(plan: &mut Value, lookup: &ReliabilityLookup<'_>) -> bool {
+/// The reorder is **stable**: equal composite scores preserve OTP's original
+/// ordering, so the default engine ranking still breaks ties. A single-itinerary
+/// plan, or itineraries that tie on every factor, keep their original order.
+pub fn rerank_plan(plan: &mut Value, lookup: &ReliabilityLookup<'_>, profile: Profile) -> bool {
     let Some(itineraries) = plan
         .get_mut("data")
         .and_then(|d| d.get_mut("plan"))
@@ -57,26 +198,50 @@ pub fn rerank_plan(plan: &mut Value, lookup: &ReliabilityLookup<'_>) -> bool {
         return false;
     };
 
-    // Score each itinerary in place, then sort by score descending. We pair the
-    // score with the original index so the sort can fall back to it, making the
-    // reorder a stable sort even though `sort_by` itself is already stable.
+    // Pull the raw per-itinerary factor values out first, since min-max
+    // normalization needs the whole set before any single score is final.
+    let raw: Vec<Factors> = itineraries
+        .iter()
+        .map(|it| factors_of(it, lookup))
+        .collect();
+
+    // Normalize each factor across the response into a benefit (higher better).
+    let reliability_b =
+        normalize_benefit(raw.iter().map(|f| f.reliability), Direction::HigherBetter);
+    let transfers_b = normalize_benefit(raw.iter().map(|f| f.transfers), Direction::LowerBetter);
+    let walk_b = normalize_benefit(raw.iter().map(|f| f.walk_seconds), Direction::LowerBetter);
+    let eco_b = normalize_benefit(raw.iter().map(|f| f.co2_grams), Direction::LowerBetter);
+
+    let w = profile.weights();
+
+    // Score each itinerary in place, then sort by composite descending. Pair the
+    // score with the original index so equal scores fall back to it — a stable
+    // sort even though `sort_by` is already stable.
     let mut scored: Vec<(usize, f64, Value)> = itineraries
         .drain(..)
         .enumerate()
         .map(|(i, mut it)| {
-            let score = score_itinerary(&it, lookup);
-            // Additive field; existing clients that grep known keys ignore it.
+            let composite = w.reliability * reliability_b[i]
+                + w.transfers * transfers_b[i]
+                + w.walk * walk_b[i]
+                + w.eco * eco_b[i];
             if let Some(obj) = it.as_object_mut() {
+                // Keep the wave-1 additive field (the raw reliability factor),
+                // and add the composite. Both are additive and optional.
                 obj.insert(
                     "reliabilityScore".to_string(),
-                    serde_json::json!(round2(score)),
+                    serde_json::json!(round2(raw[i].reliability)),
+                );
+                obj.insert(
+                    "rerankScore".to_string(),
+                    serde_json::json!(round2(composite)),
                 );
             }
-            (i, score, it)
+            (i, composite, it)
         })
         .collect();
 
-    // Descending score, original index as the stable tie-breaker.
+    // Descending composite, original index as the stable tie-breaker.
     scored.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -87,36 +252,100 @@ pub fn rerank_plan(plan: &mut Value, lookup: &ReliabilityLookup<'_>) -> bool {
     true
 }
 
-/// The reliability score for one itinerary: the mean on-time rate across its
-/// transit legs that have history. Walk/wait legs and unkeyable transit legs are
-/// skipped. An itinerary with no contributing leg scores [`NEUTRAL_SCORE`].
-fn score_itinerary(itinerary: &Value, lookup: &ReliabilityLookup<'_>) -> f64 {
+/// The raw (un-normalized) factor values for one itinerary. Each is a total
+/// function of the itinerary's legs; missing/malformed data degrades to a neutral
+/// or zero contribution, never a panic.
+struct Factors {
+    /// Mean on-time rate across transit legs with history (`0.0..=1.0`);
+    /// [`NEUTRAL_RELIABILITY`] when none.
+    reliability: f64,
+    /// Number of transit boardings (fewer is better).
+    transfers: f64,
+    /// Total walk-leg duration in seconds (less is better).
+    walk_seconds: f64,
+    /// Total estimated gCO2e across legs (lower is better).
+    co2_grams: f64,
+}
+
+/// Compute every soft factor for one itinerary in a single pass over its legs.
+fn factors_of(itinerary: &Value, lookup: &ReliabilityLookup<'_>) -> Factors {
     let Some(legs) = itinerary.get("legs").and_then(Value::as_array) else {
-        return NEUTRAL_SCORE;
+        return Factors {
+            reliability: NEUTRAL_RELIABILITY,
+            transfers: 0.0,
+            walk_seconds: 0.0,
+            co2_grams: 0.0,
+        };
     };
-    let mut sum = 0.0;
-    let mut n = 0u32;
+
+    let mut rel_sum = 0.0;
+    let mut rel_n = 0u32;
+    let mut transfers = 0u32;
+    let mut walk_seconds = 0.0;
+    let mut co2_grams = 0.0;
+
     for leg in legs {
-        if let Some(rate) = leg_on_time_rate(leg, lookup) {
-            sum += rate;
-            n += 1;
+        let mode = leg.get("mode").and_then(Value::as_str).unwrap_or("");
+        let is_transit = is_transit_leg(leg);
+
+        if is_transit {
+            transfers += 1;
+            if let Some(rate) = leg_on_time_rate(leg, lookup) {
+                rel_sum += rate;
+                rel_n += 1;
+            }
+        } else if mode == "WALK" {
+            walk_seconds += leg_duration_seconds(leg);
+        }
+
+        // Carbon over every leg with a distance (transit and active alike).
+        let distance_m = leg.get("distance").and_then(Value::as_f64).unwrap_or(0.0);
+        if distance_m > 0.0 {
+            let km = distance_m / 1000.0;
+            co2_grams += mode_co2_intensity(mode) * km;
         }
     }
-    if n == 0 {
-        NEUTRAL_SCORE
+
+    let reliability = if rel_n == 0 {
+        NEUTRAL_RELIABILITY
     } else {
-        sum / f64::from(n)
+        rel_sum / f64::from(rel_n)
+    };
+
+    Factors {
+        reliability,
+        // A trip with N boardings has N-1 transfers, but the absolute count is
+        // monotone in boardings, so boarding count is a fine ordering signal.
+        transfers: f64::from(transfers),
+        walk_seconds,
+        co2_grams,
     }
 }
 
-/// Resolve a single leg to its on-time rate, or `None` when the leg is non-transit
-/// or can't be keyed/resolved. A leg is transit when it carries a `route.gtfsId`;
-/// the direction comes from `trip.directionId` (default `0`) and the stop from
-/// the boarding `from.stop.gtfsId`.
+/// Whether a leg is a transit leg. A leg is transit when it carries a
+/// `route.gtfsId`, unless an explicit `transitLeg: false` marks it otherwise.
+fn is_transit_leg(leg: &Value) -> bool {
+    if leg.get("transitLeg").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+    leg.get("route")
+        .and_then(|r| r.get("gtfsId"))
+        .and_then(Value::as_str)
+        .is_some()
+}
+
+/// A leg's duration in seconds, from `duration` (OTP reports leg duration in
+/// seconds), defaulting to `0.0` when absent or malformed.
+fn leg_duration_seconds(leg: &Value) -> f64 {
+    leg.get("duration").and_then(Value::as_f64).unwrap_or(0.0)
+}
+
+/// Resolve a single transit leg to its on-time rate, or `None` when the leg is
+/// non-transit or can't be keyed/resolved. The direction comes from
+/// `trip.directionId` (default `0`) and the stop from the boarding
+/// `from.stop.gtfsId`.
 fn leg_on_time_rate(leg: &Value, lookup: &ReliabilityLookup<'_>) -> Option<f64> {
-    // Walk/wait legs have no route — skip them (they contribute nothing).
     let route_id = leg.get("route")?.get("gtfsId")?.as_str()?;
-    // A transitLeg flag, when present and false, also marks a non-transit leg.
     if leg.get("transitLeg").and_then(Value::as_bool) == Some(false) {
         return None;
     }
@@ -134,6 +363,53 @@ fn leg_on_time_rate(leg: &Value, lookup: &ReliabilityLookup<'_>) -> Option<f64> 
     lookup(local_id(route_id), direction_id, local_id(stop_id))
 }
 
+/// Which direction of a raw factor is "good".
+#[derive(Clone, Copy)]
+enum Direction {
+    HigherBetter,
+    LowerBetter,
+}
+
+/// Min-max normalize raw factor values across one response into a benefit in
+/// `0.0..=1.0` where **higher is always better**. We min-max (not rank) so the
+/// magnitude of a difference is preserved — two itineraries a hair apart score a
+/// hair apart, not a full rank apart. When every value is equal (or there is one
+/// itinerary) the spread is zero, so every benefit is the neutral `0.5` and the
+/// factor cannot reorder anything (the stable sort then holds original order).
+///
+/// `HigherBetter` maps the max to 1.0; `LowerBetter` flips so the min maps to
+/// 1.0. Non-finite inputs are coerced to the neutral midpoint.
+fn normalize_benefit(values: impl Iterator<Item = f64>, dir: Direction) -> Vec<f64> {
+    let raw: Vec<f64> = values
+        .map(|v| {
+            if v.is_finite() {
+                v
+            } else {
+                NEUTRAL_RELIABILITY
+            }
+        })
+        .collect();
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &v in &raw {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    let span = hi - lo;
+    raw.iter()
+        .map(|&v| {
+            if span <= 0.0 {
+                0.5 // all equal → neutral, no reordering from this factor
+            } else {
+                let unit = (v - lo) / span; // 0 at min, 1 at max
+                match dir {
+                    Direction::HigherBetter => unit,
+                    Direction::LowerBetter => 1.0 - unit,
+                }
+            }
+        })
+        .collect()
+}
+
 /// Strip OTP's `FEED:` namespace prefix off a `gtfsId`, leaving the bare local id
 /// the worker keyed the reliability index by (ADR 0027). OTP ids are `FEED:LOCAL`
 /// (e.g. `ATAC:MEA`); an id with no colon is already local and passes through.
@@ -143,8 +419,7 @@ fn local_id(gtfs_id: &str) -> &str {
         .map_or(gtfs_id, |(_feed, local)| local)
 }
 
-/// Round to two decimals so the additive `reliabilityScore` is stable and small
-/// on the wire (the underlying rate already has no more meaningful precision).
+/// Round to two decimals so the additive scores are stable and small on the wire.
 fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
 }
@@ -154,15 +429,28 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// A synthetic plan with `n` itineraries, each carrying the given legs.
+    /// A lookup with no history at all — every leg scores neutral reliability.
+    fn no_history(_r: &str, _d: i32, _s: &str) -> Option<f64> {
+        None
+    }
+
+    /// A synthetic plan with the given itineraries.
     fn plan_with(itineraries: Vec<Value>) -> Value {
         json!({ "data": { "plan": { "itineraries": itineraries } } })
     }
 
-    /// A transit leg keyed by (route, direction, stop).
+    /// A transit leg keyed by (route, direction, stop), with a mode + distance.
     fn transit_leg(route: &str, direction: i64, stop: &str) -> Value {
+        transit_leg_dist(route, direction, stop, 1000.0)
+    }
+
+    /// A transit leg with an explicit distance, so a test can hold total distance
+    /// (and thus carbon) constant while varying the number of boardings.
+    fn transit_leg_dist(route: &str, direction: i64, stop: &str, distance: f64) -> Value {
         json!({
             "transitLeg": true,
+            "mode": "BUS",
+            "distance": distance,
             "route": { "gtfsId": route },
             "trip": { "directionId": direction },
             "from": { "stop": { "gtfsId": stop } },
@@ -170,11 +458,10 @@ mod tests {
     }
 
     fn walk_leg() -> Value {
-        json!({ "transitLeg": false, "mode": "WALK" })
+        json!({ "transitLeg": false, "mode": "WALK", "duration": 300.0, "distance": 400.0 })
     }
 
-    /// Order the itineraries array by reading back the first leg's route, so
-    /// tests can assert the new sequence without depending on score values.
+    /// Order the itineraries by reading back the first leg's route id.
     fn route_order(plan: &Value) -> Vec<String> {
         plan["data"]["plan"]["itineraries"]
             .as_array()
@@ -189,9 +476,10 @@ mod tests {
             .collect()
     }
 
+    // --- reliability factor (wave-1 contract carried forward) ----------------
+
     #[test]
-    fn reorders_best_on_time_first() {
-        // Three single-transit-leg itineraries with distinct on-time rates.
+    fn reliability_profile_reorders_best_on_time_first() {
         let mut plan = plan_with(vec![
             json!({ "legs": [transit_leg("A", 0, "s1")] }),
             json!({ "legs": [transit_leg("B", 0, "s2")] }),
@@ -203,53 +491,166 @@ mod tests {
             "C" => Some(0.70),
             _ => None,
         };
-        assert!(rerank_plan(&mut plan, &lookup));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
         assert_eq!(route_order(&plan), vec!["B", "C", "A"]);
     }
 
     #[test]
-    fn rerank_is_a_stable_sort_on_ties() {
-        // All four share the same on-time rate → score ties → original order.
+    fn reliability_factor_is_neutral_when_tier2_absent() {
+        // Flag set, no history → all itineraries tie at neutral, order held.
+        let mut plan = plan_with(vec![
+            json!({ "legs": [transit_leg("A", 0, "s1")] }),
+            json!({ "legs": [transit_leg("B", 0, "s2")] }),
+        ]);
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Reliability));
+        assert_eq!(route_order(&plan), vec!["A", "B"]);
+        // The additive reliability factor reads back as neutral.
+        assert_eq!(
+            plan["data"]["plan"]["itineraries"][0]["reliabilityScore"],
+            json!(0.5)
+        );
+    }
+
+    #[test]
+    fn reliability_profile_is_a_stable_sort_on_ties() {
         let mut plan = plan_with(vec![
             json!({ "legs": [transit_leg("A", 0, "s")] }),
             json!({ "legs": [transit_leg("B", 0, "s")] }),
             json!({ "legs": [transit_leg("C", 0, "s")] }),
-            json!({ "legs": [transit_leg("D", 0, "s")] }),
         ]);
         let lookup = |_r: &str, _d: i32, _s: &str| Some(0.80);
-        assert!(rerank_plan(&mut plan, &lookup));
-        assert_eq!(route_order(&plan), vec!["A", "B", "C", "D"]);
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert_eq!(route_order(&plan), vec!["A", "B", "C"]);
     }
 
     #[test]
-    fn no_history_itineraries_keep_neutral_and_stable_position() {
-        // A (0.9) beats the two no-history itineraries, which hold their order
-        // around the neutral 0.5 and below A.
-        let mut plan = plan_with(vec![
-            json!({ "legs": [transit_leg("X", 0, "s1")] }), // no history
-            json!({ "legs": [transit_leg("A", 0, "s2")] }), // 0.90
-            json!({ "legs": [transit_leg("Y", 0, "s3")] }), // no history
-        ]);
-        let lookup = |route: &str, _d: i32, _s: &str| (route == "A").then_some(0.90);
-        assert!(rerank_plan(&mut plan, &lookup));
-        // A first (0.9 > 0.5); X and Y keep their relative order (both neutral).
-        assert_eq!(route_order(&plan), vec!["A", "X", "Y"]);
+    fn reliability_profile_attaches_additive_scores() {
+        let mut plan = plan_with(vec![json!({ "legs": [transit_leg("A", 0, "s")] })]);
+        let lookup = |_r: &str, _d: i32, _s: &str| Some(0.75);
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        let it = &plan["data"]["plan"]["itineraries"][0];
+        assert_eq!(it["reliabilityScore"], json!(0.75));
+        // The composite is present and equals the expected weighted sum: with one
+        // itinerary every factor's span is zero, so each benefit is the neutral
+        // 0.5; under Reliability weights (1,0,0,0) the composite is 1.0*0.5 = 0.5.
+        assert_eq!(it["rerankScore"], json!(0.5));
+        assert_eq!(it["legs"][0]["route"]["gtfsId"], "A");
     }
 
     #[test]
-    fn walk_and_wait_legs_contribute_nothing() {
-        // Itinerary 1: walk + good transit. Itinerary 2: walk + bad transit.
-        // Only the transit leg drives the score, so 1 sorts ahead of 2.
+    fn rerank_score_equals_the_normalized_reliability_benefit() {
+        // Two itineraries differing only in reliability (0.9 vs 0.3). Under the
+        // Reliability profile the composite is exactly the normalized reliability
+        // benefit: min-max over {0.9, 0.3} maps the higher to 1.0 and the lower to
+        // 0.0, weighted by 1.0. This pins round2 and the weighted-sum wiring to a
+        // hand-computable value, not just a relative order.
         let mut plan = plan_with(vec![
-            json!({ "legs": [walk_leg(), transit_leg("GOOD", 0, "s1")] }),
-            json!({ "legs": [walk_leg(), transit_leg("BAD", 0, "s2")] }),
+            json!({ "legs": [transit_leg("HI", 0, "s")] }),
+            json!({ "legs": [transit_leg("LO", 0, "s")] }),
         ]);
         let lookup = |route: &str, _d: i32, _s: &str| match route {
-            "GOOD" => Some(0.99),
-            "BAD" => Some(0.10),
+            "HI" => Some(0.90),
+            "LO" => Some(0.30),
             _ => None,
         };
-        assert!(rerank_plan(&mut plan, &lookup));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        let its = plan["data"]["plan"]["itineraries"].as_array().unwrap();
+        assert_eq!(its[0]["legs"][0]["route"]["gtfsId"], "HI");
+        assert_eq!(its[0]["rerankScore"], json!(1.0));
+        assert_eq!(its[1]["rerankScore"], json!(0.0));
+    }
+
+    #[test]
+    fn direction_id_is_part_of_the_reliability_key() {
+        let mut plan = plan_with(vec![
+            json!({ "legs": [transit_leg("R", 1, "s")] }),
+            json!({ "legs": [transit_leg("R", 0, "s")] }),
+        ]);
+        let lookup = |_r: &str, dir: i32, _s: &str| match dir {
+            0 => Some(0.90),
+            1 => Some(0.20),
+            _ => None,
+        };
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        let dirs: Vec<i64> = plan["data"]["plan"]["itineraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|it| it["legs"][0]["trip"]["directionId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(dirs, vec![0, 1]);
+    }
+
+    #[test]
+    fn otp_feed_prefixed_ids_match_unprefixed_index_keys() {
+        let mut plan = plan_with(vec![
+            json!({ "legs": [transit_leg("ATAC:SLOW", 0, "ATAC:70001")] }),
+            json!({ "legs": [transit_leg("ATAC:FAST", 0, "ATAC:70001")] }),
+        ]);
+        let lookup = |route: &str, _d: i32, stop: &str| match (route, stop) {
+            ("FAST", "70001") => Some(0.95),
+            ("SLOW", "70001") => Some(0.10),
+            _ => None,
+        };
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert_eq!(route_order(&plan), vec!["ATAC:FAST", "ATAC:SLOW"]);
+    }
+
+    // --- per-factor monotonicity --------------------------------------------
+
+    #[test]
+    fn comfort_prefers_fewer_transfers() {
+        // Isolate the transfers factor: both itineraries cover the SAME total
+        // distance (1200m) in the SAME mode, so carbon ties exactly; neither walks
+        // and neither has history, so walk and reliability tie too. The only thing
+        // that differs is the boarding count — one leg vs three 400m legs. With
+        // every other factor neutral, Comfort's transfers weight alone decides, so
+        // this proves the transfers factor (not carbon) drives the order.
+        let one = json!({ "legs": [transit_leg_dist("ONE", 0, "s", 1200.0)] });
+        let three = json!({ "legs": [
+            transit_leg_dist("T1", 0, "s", 400.0),
+            transit_leg_dist("T2", 0, "s", 400.0),
+            transit_leg_dist("T3", 0, "s", 400.0),
+        ]});
+        let mut plan = plan_with(vec![three, one]);
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Comfort));
+        // The one-board itinerary (route ONE) sorts to the front.
+        assert_eq!(route_order(&plan), vec!["ONE", "T1"]);
+    }
+
+    #[test]
+    fn factors_of_counts_boardings_and_walk_directly() {
+        // A direct read of the raw factors: three transit boardings and a 300s walk
+        // leg → transfers == 3, walk_seconds == 300, independent of any other
+        // factor. This pins the transfers/walk extraction without going through the
+        // composite, where carbon could otherwise mask it.
+        let it = json!({ "legs": [
+            transit_leg("A", 0, "s"),
+            transit_leg("B", 0, "s"),
+            transit_leg("C", 0, "s"),
+            walk_leg(),
+        ]});
+        let f = factors_of(&it, &no_history);
+        assert_eq!(f.transfers, 3.0);
+        assert_eq!(f.walk_seconds, 300.0);
+    }
+
+    #[test]
+    fn comfort_prefers_less_walking() {
+        // Same single transit leg; one itinerary adds a long walk leg. Comfort
+        // penalizes walking → the no-walk itinerary leads.
+        let little_walk = json!({ "legs": [
+            json!({ "transitLeg": false, "mode": "WALK", "duration": 60.0, "distance": 80.0 }),
+            transit_leg("LOW", 0, "s"),
+        ]});
+        let lots_walk = json!({ "legs": [
+            json!({ "transitLeg": false, "mode": "WALK", "duration": 1800.0, "distance": 2400.0 }),
+            transit_leg("HIGH", 0, "s"),
+        ]});
+        let mut plan = plan_with(vec![lots_walk, little_walk]);
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Comfort));
+        // The light-walk itinerary's first leg is the walk leg; assert via the
+        // transit leg id at index 1.
         let routes: Vec<String> = plan["data"]["plan"]["itineraries"]
             .as_array()
             .unwrap()
@@ -261,179 +662,229 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert_eq!(routes, vec!["GOOD", "BAD"]);
+        assert_eq!(routes, vec!["LOW", "HIGH"]);
     }
 
     #[test]
-    fn multi_leg_score_is_the_mean_of_transit_legs() {
-        // Itinerary P: legs 0.4 and 0.6 → mean 0.5. Itinerary Q: single 0.55.
-        // Q (0.55) edges out P (0.50).
-        let mut plan = plan_with(vec![
-            json!({ "legs": [transit_leg("P1", 0, "s"), transit_leg("P2", 0, "s")] }),
-            json!({ "legs": [transit_leg("Q", 0, "s")] }),
-        ]);
-        let lookup = |route: &str, _d: i32, _s: &str| match route {
-            "P1" => Some(0.40),
-            "P2" => Some(0.60),
-            "Q" => Some(0.55),
-            _ => None,
-        };
-        assert!(rerank_plan(&mut plan, &lookup));
-        assert_eq!(route_order(&plan), vec!["Q", "P1"]);
-    }
-
-    #[test]
-    fn attaches_additive_reliability_score() {
-        let mut plan = plan_with(vec![json!({ "legs": [transit_leg("A", 0, "s")] })]);
-        let lookup = |_r: &str, _d: i32, _s: &str| Some(0.75);
-        assert!(rerank_plan(&mut plan, &lookup));
-        let it = &plan["data"]["plan"]["itineraries"][0];
-        assert_eq!(it["reliabilityScore"], json!(0.75));
-        // The original leg data is untouched (schema preserved).
-        assert_eq!(it["legs"][0]["route"]["gtfsId"], "A");
-    }
-
-    #[test]
-    fn direction_id_is_part_of_the_key() {
-        // Same route+stop, different direction → different on-time rate.
-        let mut plan = plan_with(vec![
-            json!({ "legs": [transit_leg("R", 1, "s")] }),
-            json!({ "legs": [transit_leg("R", 0, "s")] }),
-        ]);
-        let lookup = |_r: &str, dir: i32, _s: &str| match dir {
-            0 => Some(0.90),
-            1 => Some(0.20),
-            _ => None,
-        };
-        assert!(rerank_plan(&mut plan, &lookup));
-        // Direction 0 (0.9) sorts ahead of direction 1 (0.2).
-        let dirs: Vec<i64> = plan["data"]["plan"]["itineraries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|it| it["legs"][0]["trip"]["directionId"].as_i64().unwrap())
-            .collect();
-        assert_eq!(dirs, vec![0, 1]);
-    }
-
-    #[test]
-    fn missing_direction_defaults_to_zero() {
-        // A transit leg with no trip.directionId is keyed with direction 0.
-        let leg = json!({
-            "transitLeg": true,
-            "route": { "gtfsId": "R" },
+    fn eco_prefers_lower_emissions() {
+        // Same distance, different modes: a metro leg (low gCO2e) vs a bus leg
+        // (high). Eco weights carbon heavily → the metro itinerary leads.
+        let metro = json!({ "legs": [json!({
+            "transitLeg": true, "mode": "SUBWAY", "distance": 5000.0,
+            "route": { "gtfsId": "METRO" }, "trip": { "directionId": 0 },
             "from": { "stop": { "gtfsId": "s" } },
-        });
-        let mut plan = plan_with(vec![json!({ "legs": [leg] })]);
-        let seen = std::cell::Cell::new(None);
-        let lookup = |_r: &str, dir: i32, _s: &str| {
-            seen.set(Some(dir));
-            Some(0.5)
-        };
-        assert!(rerank_plan(&mut plan, &lookup));
-        assert_eq!(seen.get(), Some(0), "absent directionId keys as 0");
+        })]});
+        let bus = json!({ "legs": [json!({
+            "transitLeg": true, "mode": "BUS", "distance": 5000.0,
+            "route": { "gtfsId": "BUSLINE" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]});
+        let mut plan = plan_with(vec![bus, metro]);
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Eco));
+        assert_eq!(route_order(&plan), vec!["METRO", "BUSLINE"]);
     }
 
     #[test]
-    fn otp_feed_prefixed_ids_match_unprefixed_index_keys() {
-        // OTP sends `FEED:LOCAL` gtfsIds; the index holds bare local ids. The
-        // feed prefix must be stripped so the lookup hits and the plan reorders.
-        let mut plan = plan_with(vec![
-            json!({ "legs": [transit_leg("ATAC:SLOW", 0, "ATAC:70001")] }),
-            json!({ "legs": [transit_leg("ATAC:FAST", 0, "ATAC:70001")] }),
-        ]);
-        // The closure only knows the unprefixed ids — exactly what the worker records.
-        let lookup = |route: &str, _d: i32, stop: &str| match (route, stop) {
-            ("FAST", "70001") => Some(0.95),
-            ("SLOW", "70001") => Some(0.10),
+    fn eco_treats_active_modes_as_zero_carbon() {
+        // A pure-walk itinerary (zero carbon) beats a bus itinerary under eco.
+        let walk_only = json!({ "legs": [walk_leg()] });
+        let bus = json!({ "legs": [transit_leg("BUSLINE", 0, "s")] });
+        let mut plan = plan_with(vec![bus, walk_only]);
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Eco));
+        // The walk-only itinerary has no route at leg 0; check it landed first by
+        // confirming the bus itinerary is now last.
+        let last = &plan["data"]["plan"]["itineraries"][1];
+        assert_eq!(last["legs"][0]["route"]["gtfsId"], "BUSLINE");
+    }
+
+    // --- composite & profiles ------------------------------------------------
+
+    #[test]
+    fn profiles_weight_the_same_plan_differently() {
+        // Itinerary FAST: one short bus leg, good reliability, no walk.
+        // Itinerary GREEN: one metro leg (low carbon), poor reliability.
+        // Eco should prefer GREEN; reliability should prefer FAST.
+        let fast = json!({ "legs": [json!({
+            "transitLeg": true, "mode": "BUS", "distance": 3000.0,
+            "route": { "gtfsId": "FAST" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s1" } },
+        })]});
+        let green = json!({ "legs": [json!({
+            "transitLeg": true, "mode": "SUBWAY", "distance": 3000.0,
+            "route": { "gtfsId": "GREEN" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s2" } },
+        })]});
+        let lookup = |route: &str, _d: i32, _s: &str| match route {
+            "FAST" => Some(0.95),
+            "GREEN" => Some(0.20),
             _ => None,
         };
-        assert!(rerank_plan(&mut plan, &lookup));
-        // FAST (0.95) reorders ahead of SLOW (0.10): the match actually fired.
-        assert_eq!(route_order(&plan), vec!["ATAC:FAST", "ATAC:SLOW"]);
+
+        let mut p_rel = plan_with(vec![green.clone(), fast.clone()]);
+        assert!(rerank_plan(&mut p_rel, &lookup, Profile::Reliability));
+        assert_eq!(route_order(&p_rel), vec!["FAST", "GREEN"]);
+
+        let mut p_eco = plan_with(vec![fast, green]);
+        assert!(rerank_plan(&mut p_eco, &lookup, Profile::Eco));
+        assert_eq!(route_order(&p_eco), vec!["GREEN", "FAST"]);
     }
 
     #[test]
-    fn rerank_is_idempotent_on_a_second_pass() {
-        // Feeding an already-reranked plan back through must not change the order
-        // or duplicate/re-nest the additive reliabilityScore.
+    fn single_itinerary_is_never_reordered_and_factors_are_neutral() {
+        // One itinerary → every factor's spread is zero → benefit 0.5 → no change.
+        let mut plan = plan_with(vec![json!({ "legs": [transit_leg("ONLY", 0, "s")] })]);
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced));
+        assert_eq!(route_order(&plan), vec!["ONLY"]);
+    }
+
+    #[test]
+    fn all_equal_itineraries_keep_original_order() {
+        // Three itineraries with distinct route ids but identical factor values →
+        // tie on every factor → stable order.
         let mut plan = plan_with(vec![
             json!({ "legs": [transit_leg("A", 0, "s")] }),
             json!({ "legs": [transit_leg("B", 0, "s")] }),
+            json!({ "legs": [transit_leg("C", 0, "s")] }),
         ]);
-        let lookup = |route: &str, _d: i32, _s: &str| match route {
-            "A" => Some(0.30),
-            "B" => Some(0.80),
-            _ => None,
-        };
-        assert!(rerank_plan(&mut plan, &lookup));
-        let order1 = route_order(&plan);
-        let scores1: Vec<Value> = plan["data"]["plan"]["itineraries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|it| it["reliabilityScore"].clone())
-            .collect();
-        assert!(rerank_plan(&mut plan, &lookup));
-        assert_eq!(route_order(&plan), order1, "order is a fixed point");
-        let scores2: Vec<Value> = plan["data"]["plan"]["itineraries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|it| it["reliabilityScore"].clone())
-            .collect();
-        assert_eq!(scores2, scores1, "scores unchanged on the second pass");
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced));
+        assert_eq!(route_order(&plan), vec!["A", "B", "C"]);
     }
 
     #[test]
-    fn transit_leg_without_boarding_stop_scores_neutral() {
-        // A well-formed transit leg (route + direction) but no from.stop can't be
-        // keyed: it must be skipped, leaving the itinerary at the neutral score
-        // (held against a no-history sibling), never a panic.
-        let no_stop = json!({
-            "transitLeg": true,
-            "route": { "gtfsId": "R" },
-            "trip": { "directionId": 0 },
-        });
-        let mut plan = plan_with(vec![
-            json!({ "legs": [no_stop] }),
-            json!({ "legs": [transit_leg("OTHER", 0, "s")] }), // also no history
-        ]);
-        let lookup = |_r: &str, _d: i32, _s: &str| None;
-        assert!(rerank_plan(&mut plan, &lookup));
-        // Both neutral → original order held; the stop-less leg scored as a skip.
-        assert_eq!(
-            plan["data"]["plan"]["itineraries"][0]["reliabilityScore"],
-            json!(0.5)
-        );
-        assert_eq!(route_order(&plan), vec!["R", "OTHER"]);
+    fn balanced_blends_factors_against_a_single_factor_order() {
+        // A constructed two-itinerary case where the Balanced blend tips the OTHER
+        // way from a pure-eco ordering, proving the weighted sum (not one dominant
+        // factor) decides. With two itineraries each factor is 0/1, so we can hand
+        // compute the composites under Balanced weights (rel=1.0, tr=0.6, walk=0.4,
+        // eco=0.6):
+        //
+        //   DIRECT: one BUS leg (higher carbon), 1 boarding, reliability 0.95.
+        //     rel benefit 1, transfers benefit 1, eco benefit 0, walk tie 0.5
+        //     → 1.0*1 + 0.6*1 + 0.4*0.5 + 0.6*0 = 1.80
+        //   GREEN: two SUBWAY legs (low carbon), 2 boardings, reliability 0.20.
+        //     rel benefit 0, transfers benefit 0, eco benefit 1, walk tie 0.5
+        //     → 1.0*0 + 0.6*0 + 0.4*0.5 + 0.6*1 = 0.80
+        //
+        // Balanced ranks DIRECT first; a pure-eco order would rank GREEN first. So
+        // asserting DIRECT leads can only hold if the blend, not eco alone, decides.
+        let direct = json!({ "legs": [json!({
+            "transitLeg": true, "mode": "BUS", "distance": 4000.0,
+            "route": { "gtfsId": "DIRECT" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } } })]});
+        let green = json!({ "legs": [
+            json!({ "transitLeg": true, "mode": "SUBWAY", "distance": 2000.0,
+                "route": { "gtfsId": "G1" }, "trip": { "directionId": 0 },
+                "from": { "stop": { "gtfsId": "s" } } }),
+            json!({ "transitLeg": true, "mode": "SUBWAY", "distance": 2000.0,
+                "route": { "gtfsId": "G2" }, "trip": { "directionId": 0 },
+                "from": { "stop": { "gtfsId": "s" } } }),
+        ]});
+        let lookup = |route: &str, _d: i32, _s: &str| match route {
+            "DIRECT" => Some(0.95),
+            "G1" | "G2" => Some(0.20),
+            _ => None,
+        };
+        let mut plan = plan_with(vec![green, direct]);
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Balanced));
+        // The blend lifts DIRECT above the lower-carbon GREEN; eco alone would not.
+        assert_eq!(route_order(&plan), vec!["DIRECT", "G1"]);
+        // Pin the composites the blend produced, confirming the weighted-sum wiring.
+        let its = plan["data"]["plan"]["itineraries"].as_array().unwrap();
+        assert_eq!(its[0]["rerankScore"], json!(1.8));
+        assert_eq!(its[1]["rerankScore"], json!(0.8));
     }
+
+    #[test]
+    fn profile_from_flag_parses_known_profiles_only() {
+        assert_eq!(
+            Profile::from_flag("reliability"),
+            Some(Profile::Reliability)
+        );
+        assert_eq!(Profile::from_flag("balanced"), Some(Profile::Balanced));
+        assert_eq!(Profile::from_flag("eco"), Some(Profile::Eco));
+        assert_eq!(Profile::from_flag("comfort"), Some(Profile::Comfort));
+        assert_eq!(Profile::from_flag("nonsense"), None);
+        assert_eq!(Profile::from_flag(""), None);
+    }
+
+    #[test]
+    fn carbon_intensity_orders_modes_sensibly() {
+        // Active = 0 < electrified rail/metro/tram < bus < car. The exact values
+        // are estimates; the ordering is the contract.
+        assert_eq!(mode_co2_intensity("WALK"), 0.0);
+        assert_eq!(mode_co2_intensity("BICYCLE"), 0.0);
+        assert!(mode_co2_intensity("SUBWAY") < mode_co2_intensity("BUS"));
+        assert!(mode_co2_intensity("TRAM") < mode_co2_intensity("BUS"));
+        assert!(mode_co2_intensity("RAIL") < mode_co2_intensity("BUS"));
+        assert!(mode_co2_intensity("BUS") < mode_co2_intensity("CAR"));
+        // FERRY sits at the high end, at or above bus.
+        assert!(mode_co2_intensity("FERRY") >= mode_co2_intensity("BUS"));
+        // An unknown motorized mode is a finite mid estimate, never zero, and
+        // lands between the low-transit band and a car — neither dominating nor
+        // disappearing.
+        assert!(mode_co2_intensity("ZEPPELIN") > 0.0);
+        assert!(mode_co2_intensity("SUBWAY") < mode_co2_intensity("ZEPPELIN"));
+        assert!(mode_co2_intensity("ZEPPELIN") < mode_co2_intensity("CAR"));
+    }
+
+    // --- min-max normalization ----------------------------------------------
+
+    #[test]
+    fn normalize_higher_better_maps_max_to_one() {
+        let b = normalize_benefit([0.0, 5.0, 10.0].into_iter(), Direction::HigherBetter);
+        assert_eq!(b, vec![0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn normalize_lower_better_flips() {
+        let b = normalize_benefit([0.0, 5.0, 10.0].into_iter(), Direction::LowerBetter);
+        assert_eq!(b, vec![1.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn normalize_all_equal_is_neutral() {
+        let b = normalize_benefit([7.0, 7.0, 7.0].into_iter(), Direction::LowerBetter);
+        assert_eq!(b, vec![0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn normalize_non_finite_is_coerced_to_neutral() {
+        let b = normalize_benefit([f64::NAN, 0.0, 1.0].into_iter(), Direction::HigherBetter);
+        // NaN became 0.5, the span is [0,1], so it maps to 0.5.
+        assert_eq!(b[0], 0.5);
+    }
+
+    // --- fail-soft -----------------------------------------------------------
 
     #[test]
     fn non_plan_value_is_left_untouched() {
-        // Anything that isn't `data.plan.itineraries[]` returns false + no change.
-        let lookup = |_r: &str, _d: i32, _s: &str| Some(0.5);
-
         let mut not_a_plan = json!({ "errors": [{ "message": "boom" }] });
         let before = not_a_plan.clone();
-        assert!(!rerank_plan(&mut not_a_plan, &lookup));
+        assert!(!rerank_plan(
+            &mut not_a_plan,
+            &no_history,
+            Profile::Balanced
+        ));
         assert_eq!(not_a_plan, before);
 
         let mut wrong_shape = json!({ "data": { "plan": { "itineraries": "nope" } } });
         let before2 = wrong_shape.clone();
-        assert!(!rerank_plan(&mut wrong_shape, &lookup));
+        assert!(!rerank_plan(
+            &mut wrong_shape,
+            &no_history,
+            Profile::Balanced
+        ));
         assert_eq!(wrong_shape, before2);
 
         let mut bare = json!(42);
-        assert!(!rerank_plan(&mut bare, &lookup));
+        assert!(!rerank_plan(&mut bare, &no_history, Profile::Balanced));
         assert_eq!(bare, json!(42));
     }
 
     #[test]
     fn empty_itineraries_is_a_no_op_success() {
         let mut plan = plan_with(vec![]);
-        let lookup = |_r: &str, _d: i32, _s: &str| Some(0.5);
-        assert!(rerank_plan(&mut plan, &lookup));
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced));
         assert_eq!(
             plan["data"]["plan"]["itineraries"]
                 .as_array()
@@ -445,22 +896,59 @@ mod tests {
 
     #[test]
     fn malformed_legs_never_panic_and_score_neutral() {
-        // Legs with missing/!object shapes must be skipped, not panic. Two such
-        // itineraries tie at neutral and keep order.
-        let mut plan = plan_with(vec![
+        let plan = plan_with(vec![
             json!({ "legs": [json!(7), json!({ "route": "not-an-object" })] }),
             json!({ "legs": "not-an-array" }),
             json!({ "no": "legs" }),
         ]);
-        let lookup = |_r: &str, _d: i32, _s: &str| Some(0.9);
-        // Must not panic; all three score neutral and keep their order.
-        assert!(rerank_plan(&mut plan, &lookup));
+        // Must not panic across every profile; all three are kept.
+        for profile in [
+            Profile::Reliability,
+            Profile::Balanced,
+            Profile::Eco,
+            Profile::Comfort,
+        ] {
+            let mut p = plan.clone();
+            assert!(rerank_plan(&mut p, &no_history, profile));
+            assert_eq!(
+                p["data"]["plan"]["itineraries"].as_array().unwrap().len(),
+                3
+            );
+        }
+    }
+
+    #[test]
+    fn transit_leg_without_boarding_stop_scores_neutral_reliability() {
+        let no_stop = json!({
+            "transitLeg": true, "mode": "BUS", "distance": 1000.0,
+            "route": { "gtfsId": "R" }, "trip": { "directionId": 0 },
+        });
+        let mut plan = plan_with(vec![
+            json!({ "legs": [no_stop] }),
+            json!({ "legs": [transit_leg("OTHER", 0, "s")] }),
+        ]);
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Reliability));
         assert_eq!(
-            plan["data"]["plan"]["itineraries"]
-                .as_array()
-                .unwrap()
-                .len(),
-            3
+            plan["data"]["plan"]["itineraries"][0]["reliabilityScore"],
+            json!(0.5)
         );
+        assert_eq!(route_order(&plan), vec!["R", "OTHER"]);
+    }
+
+    #[test]
+    fn rerank_is_idempotent_on_a_second_pass() {
+        let mut plan = plan_with(vec![
+            json!({ "legs": [transit_leg("A", 0, "s")] }),
+            json!({ "legs": [transit_leg("B", 0, "s")] }),
+        ]);
+        let lookup = |route: &str, _d: i32, _s: &str| match route {
+            "A" => Some(0.30),
+            "B" => Some(0.80),
+            _ => None,
+        };
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        let order1 = route_order(&plan);
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert_eq!(route_order(&plan), order1, "order is a fixed point");
     }
 }

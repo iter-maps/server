@@ -2,8 +2,8 @@
 //! GraphQL) goes to OTP; geocoding (`/api`, `/reverse`, `/status`) goes to
 //! Photon. The BFF passes these through today; place-enrichment hooks in
 //! elsewhere. Upstream responses are streamed so large payloads don't buffer —
-//! except on the opt-in `?rerank=reliability` routing path, which buffers the
-//! plan to reorder its itineraries (ADR 0026).
+//! except on the opt-in `?rerank=<profile>` routing path, which buffers the plan
+//! to reorder its itineraries by a soft composite score (ADR 0026, 0028).
 
 use axum::body::{Body, Bytes};
 use axum::extract::{RawQuery, State};
@@ -13,12 +13,8 @@ use iter_core::ApiError;
 use iter_core::reliability::store_read::read_tier2_on_time_index;
 
 use crate::http::ApiResult;
-use crate::rerank::rerank_plan;
+use crate::rerank::{Profile, rerank_plan};
 use crate::state::AppState;
-
-/// The opt-in flag that turns the routing passthrough into a reliability rerank.
-/// Absent (the default) keeps the handler a byte-for-byte streaming passthrough.
-const RERANK_RELIABILITY: &str = "reliability";
 
 /// Upper bound on the OTP plan body we will buffer to rerank (16 MiB), mirroring
 /// the Tier-2 read cap. A plan past this is streamed through unchanged rather than
@@ -48,22 +44,26 @@ pub async fn routing(
         .await;
 
     // Default path: stream the upstream response through unchanged. Only when the
-    // caller opts in do we buffer+rerank (ADR 0026) — so existing routing never
-    // regresses.
-    if rerank_requested(query.as_deref()) {
-        rerank_routing(&state, sent).await
+    // caller opts in with a recognized profile do we buffer+rerank (ADR 0026,
+    // 0028) — so existing routing never regresses.
+    if let Some(profile) = rerank_profile(query.as_deref()) {
+        rerank_routing(&state, sent, profile).await
     } else {
         relay(sent, "otp").await
     }
 }
 
-/// True when the raw query string carries `rerank=reliability`. Other `rerank`
-/// values (or none) leave the handler a passthrough.
-fn rerank_requested(query: Option<&str>) -> bool {
-    let Some(q) = query else { return false };
+/// The rerank [`Profile`] requested by the raw query string's `rerank=<profile>`
+/// flag, or `None` when the flag is absent or names an unknown profile — in which
+/// case the handler stays a passthrough. `rerank=reliability` preserves the
+/// wave-1 contract (ADR 0026); `balanced`/`eco`/`comfort` select composite
+/// weightings (ADR 0028).
+fn rerank_profile(query: Option<&str>) -> Option<Profile> {
+    let q = query?;
     q.split('&')
         .filter_map(|pair| pair.split_once('='))
-        .any(|(k, v)| k == "rerank" && v == RERANK_RELIABILITY)
+        .find(|(k, _)| *k == "rerank")
+        .and_then(|(_, v)| Profile::from_flag(v))
 }
 
 /// Opt-in routing path: buffer the OTP plan, reorder its itineraries by
@@ -74,6 +74,7 @@ fn rerank_requested(query: Option<&str>) -> bool {
 async fn rerank_routing(
     state: &AppState,
     sent: Result<reqwest::Response, reqwest::Error>,
+    profile: Profile,
 ) -> ApiResult<Response> {
     let resp = sent.map_err(|e| upstream_error(&e, "otp"))?;
     let status = resp.status();
@@ -98,7 +99,7 @@ async fn rerank_routing(
     // rerank and passes through unchanged. No second copy of the body is kept.
     let root = state.cfg.reliability_dir.clone();
     let body = tokio::task::spawn_blocking(move || {
-        try_rerank(&root, &bytes).unwrap_or_else(|| bytes.to_vec())
+        try_rerank(&root, &bytes, profile).unwrap_or_else(|| bytes.to_vec())
     })
     .await
     .map_err(|_| ApiError::internal("rerank worker panicked"))?;
@@ -118,7 +119,7 @@ async fn rerank_routing(
 /// the shared Tier-2 archive once (same dir as the read endpoint, ADR 0024) into
 /// a per-stop on-time-rate index; the rerank core looks legs up against it. This
 /// runs on a blocking worker (it touches the filesystem).
-fn try_rerank(root: &std::path::Path, bytes: &[u8]) -> Option<Vec<u8>> {
+fn try_rerank(root: &std::path::Path, bytes: &[u8], profile: Profile) -> Option<Vec<u8>> {
     let mut plan: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     // One bounded, fail-soft file read; an absent/corrupt store yields an empty
     // index, so every leg misses and itineraries hold their order.
@@ -128,7 +129,7 @@ fn try_rerank(root: &std::path::Path, bytes: &[u8]) -> Option<Vec<u8>> {
             .get(&(route.to_string(), direction, stop.to_string()))
             .copied()
     };
-    if rerank_plan(&mut plan, &lookup) {
+    if rerank_plan(&mut plan, &lookup, profile) {
         serde_json::to_vec(&plan).ok()
     } else {
         None
@@ -191,30 +192,35 @@ fn upstream_error(e: &reqwest::Error, upstream: &str) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::rerank_requested;
+    use super::{Profile, rerank_profile};
 
     #[test]
-    fn rerank_requested_only_fires_for_the_exact_flag() {
-        // The opt-in boundary: only `rerank=reliability`, in any position, triggers.
-        // Everything else stays a passthrough (default-off contract, ADR 0026).
+    fn rerank_profile_is_none_for_absent_or_unknown_flags() {
+        // The opt-in boundary: only a recognized profile triggers; everything else
+        // stays a passthrough (default-off contract, ADR 0026/0028).
         for absent in [
             None,
             Some(""),
-            Some("rerank=foo"),          // wrong value
+            Some("rerank=foo"),          // unknown profile
             Some("rerank="),             // bare value
             Some("rerankX=reliability"), // not the rerank key
-            Some("rerank=reliabilityX"), // value is a superstring, not equal
+            Some("rerank=reliabilityX"), // value is a superstring, not a profile
             Some("other=1"),
         ] {
-            assert!(!rerank_requested(absent), "should not fire: {absent:?}");
+            assert_eq!(rerank_profile(absent), None, "should not fire: {absent:?}");
         }
-        for present in [
-            "rerank=reliability",
-            "x=1&rerank=reliability", // flag not first
-            "rerank=reliability&y=2", // extra param after
-            "a=b&rerank=reliability&c=d",
+    }
+
+    #[test]
+    fn rerank_profile_parses_each_profile_in_any_position() {
+        for (q, want) in [
+            ("rerank=reliability", Profile::Reliability),
+            ("x=1&rerank=reliability", Profile::Reliability), // flag not first
+            ("rerank=balanced&y=2", Profile::Balanced),       // extra param after
+            ("a=b&rerank=eco&c=d", Profile::Eco),
+            ("rerank=comfort", Profile::Comfort),
         ] {
-            assert!(rerank_requested(Some(present)), "should fire: {present}");
+            assert_eq!(rerank_profile(Some(q)), Some(want), "should fire: {q}");
         }
     }
 }

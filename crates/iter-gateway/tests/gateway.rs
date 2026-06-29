@@ -602,20 +602,42 @@ fn gateway_with_otp(otp_base: String, root: PathBuf) -> Router {
     router::build(AppState::new(cfg).unwrap())
 }
 
-/// POST a routing query to the gateway, optionally with the rerank flag.
+/// POST a routing query to the gateway, optionally with the `reliability` flag.
 fn routing_req(rerank: bool) -> Request<Body> {
-    let uri = if rerank {
-        "/otp/gtfs/v1?rerank=reliability"
+    if rerank {
+        routing_req_profile("reliability")
     } else {
-        "/otp/gtfs/v1"
-    };
+        routing_req_plain()
+    }
+}
+
+/// POST a routing query with no rerank flag (the default passthrough path).
+fn routing_req_plain() -> Request<Body> {
     Request::builder()
         .method("POST")
-        .uri(uri)
+        .uri("/otp/gtfs/v1")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(r#"{"query":"{plan{itineraries{legs{mode}}}}"}"#))
         .unwrap()
 }
+
+/// POST a routing query opting into the given rerank profile.
+fn routing_req_profile(profile: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/otp/gtfs/v1?rerank={profile}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"query":"{plan{itineraries{legs{mode}}}}"}"#))
+        .unwrap()
+}
+
+/// A two-itinerary plan distinguishing modes for the eco profile: itinerary 0
+/// rides a bus (higher carbon), itinerary 1 rides the metro (lower carbon), both
+/// the same distance. Carries `mode`/`distance` so the composite factors apply.
+const ECO_PLAN: &str = r#"{"data":{"plan":{"itineraries":[
+  {"duration":600,"legs":[{"transitLeg":true,"mode":"BUS","distance":5000.0,"route":{"gtfsId":"BUSLINE"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s1"}}}]},
+  {"duration":700,"legs":[{"transitLeg":true,"mode":"SUBWAY","distance":5000.0,"route":{"gtfsId":"METRO"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s2"}}}]}
+]}}}"#;
 
 /// A two-itinerary OTP plan: itinerary 0 rides route SLOW, itinerary 1 rides
 /// route FAST, both boarding stop 70001 in direction 0.
@@ -841,4 +863,37 @@ async fn routing_rerank_multi_leg_mean_drives_end_to_end_order() {
     let its = v["data"]["plan"]["itineraries"].as_array().unwrap();
     assert_eq!(its[0]["reliabilityScore"], serde_json::json!(0.8));
     assert_eq!(its[1]["reliabilityScore"], serde_json::json!(0.3));
+}
+
+#[tokio::test]
+async fn routing_rerank_eco_profile_orders_low_carbon_first() {
+    // End-to-end: the eco profile reorders a bus-first plan so the metro (lower
+    // gCO2e/p-km over the same distance) leads, with no reliability history at
+    // all — proving a non-reliability composite factor drives the order through
+    // the real handler (ADR 0028).
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, ECO_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap(); // no reliability/ seeded
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("eco")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(itinerary_routes(&body), vec!["METRO", "BUSLINE"]);
+    // The additive composite score is present; metro outscores the bus.
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let its = v["data"]["plan"]["itineraries"].as_array().unwrap();
+    assert!(its[0]["rerankScore"].as_f64().unwrap() >= its[1]["rerankScore"].as_f64().unwrap());
+}
+
+#[tokio::test]
+async fn routing_unknown_rerank_profile_is_a_passthrough() {
+    // An unrecognized profile must not buffer/reorder — it stays the byte-for-byte
+    // passthrough, exactly like the default path (ADR 0028).
+    let (otp, _h) = otp_stub(StatusCode::OK, ECO_PLAN).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("nonsense")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, ECO_PLAN.as_bytes());
+    assert!(!String::from_utf8_lossy(&body).contains("rerankScore"));
 }
