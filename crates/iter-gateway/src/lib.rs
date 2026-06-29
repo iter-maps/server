@@ -2,6 +2,7 @@
 //! binary (`main.rs`) is a thin wrapper over `router::build` so the router stays
 //! integration-testable via `tower`'s `oneshot`.
 
+pub mod annotate;
 pub mod cache;
 pub mod config;
 pub mod correlate;
@@ -9,6 +10,7 @@ pub mod enrich;
 pub mod glyphs;
 pub mod health;
 pub mod http;
+pub mod legkey;
 pub mod live_trains;
 pub mod manifest;
 pub mod offline;

@@ -40,6 +40,8 @@
 
 use serde_json::Value;
 
+use crate::legkey::{is_transit_leg, leg_key};
+
 /// Resolves a transit leg's `(route_id, direction_id, stop_id)` reliability key
 /// to an on-time rate in `0.0..=1.0`, or `None` when there is no history. The
 /// handler builds this over the on-disk Tier-2 archive; tests pass a synthetic
@@ -322,18 +324,6 @@ fn factors_of(itinerary: &Value, lookup: &ReliabilityLookup<'_>) -> Factors {
     }
 }
 
-/// Whether a leg is a transit leg. A leg is transit when it carries a
-/// `route.gtfsId`, unless an explicit `transitLeg: false` marks it otherwise.
-fn is_transit_leg(leg: &Value) -> bool {
-    if leg.get("transitLeg").and_then(Value::as_bool) == Some(false) {
-        return false;
-    }
-    leg.get("route")
-        .and_then(|r| r.get("gtfsId"))
-        .and_then(Value::as_str)
-        .is_some()
-}
-
 /// A leg's duration in seconds, from `duration` (OTP reports leg duration in
 /// seconds), defaulting to `0.0` when absent or malformed.
 fn leg_duration_seconds(leg: &Value) -> f64 {
@@ -345,22 +335,8 @@ fn leg_duration_seconds(leg: &Value) -> f64 {
 /// `trip.directionId` (default `0`) and the stop from the boarding
 /// `from.stop.gtfsId`.
 fn leg_on_time_rate(leg: &Value, lookup: &ReliabilityLookup<'_>) -> Option<f64> {
-    let route_id = leg.get("route")?.get("gtfsId")?.as_str()?;
-    if leg.get("transitLeg").and_then(Value::as_bool) == Some(false) {
-        return None;
-    }
-    let direction_id = leg
-        .get("trip")
-        .and_then(|t| t.get("directionId"))
-        .and_then(Value::as_i64)
-        .and_then(|d| i32::try_from(d).ok())
-        .unwrap_or(0);
-    let stop_id = leg
-        .get("from")
-        .and_then(|f| f.get("stop"))
-        .and_then(|s| s.get("gtfsId"))
-        .and_then(Value::as_str)?;
-    lookup(local_id(route_id), direction_id, local_id(stop_id))
+    let key = leg_key(leg)?;
+    lookup(key.route, key.direction, key.stop)
 }
 
 /// Which direction of a raw factor is "good".
@@ -408,15 +384,6 @@ fn normalize_benefit(values: impl Iterator<Item = f64>, dir: Direction) -> Vec<f
             }
         })
         .collect()
-}
-
-/// Strip OTP's `FEED:` namespace prefix off a `gtfsId`, leaving the bare local id
-/// the worker keyed the reliability index by (ADR 0027). OTP ids are `FEED:LOCAL`
-/// (e.g. `ATAC:MEA`); an id with no colon is already local and passes through.
-fn local_id(gtfs_id: &str) -> &str {
-    gtfs_id
-        .split_once(':')
-        .map_or(gtfs_id, |(_feed, local)| local)
 }
 
 /// Round to two decimals so the additive scores are stable and small on the wire.

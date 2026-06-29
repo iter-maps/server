@@ -197,6 +197,73 @@ pub fn read_tier2_on_time_index(
         .collect()
 }
 
+/// A `(route, direction, stop)`'s typical delay, reduced over every
+/// (tod_bucket, day_type) cell of that stop. Carries both the median (`p50_s`)
+/// and the conservative tail (`p85_s`) in seconds, plus the total observation
+/// count behind them, so a consumer can pick the percentile it wants and gate on
+/// confidence. Built for the no-RT delay annotator (ADR 0030), which fills a
+/// historical delay where OTP carries no live realtime signal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypicalDelay {
+    /// Median delay across the stop's cells, seconds. Negative is early.
+    pub p50_s: f64,
+    /// 85th-percentile (conservative) delay, seconds.
+    pub p85_s: f64,
+    /// Total observations behind the figures.
+    pub count: u64,
+}
+
+/// A typical-delay lookup per `(route, direction, stop)`, reduced over every
+/// (tod_bucket, day_type) cell of that stop — the whole Tier-2 archive in one
+/// pass. The companion of [`read_tier2_on_time_index`] for the no-RT delay
+/// annotator (ADR 0030): where the reranker needs an on-time *rate*, the
+/// annotator needs a typical *delay* to surface. Each cell contributes its own
+/// p50/p85 weighted by its observation count, so a busy slice dominates a quiet
+/// one. Fail-soft and bounded: a missing or corrupt store yields an empty map.
+/// Cells with no count don't contribute; a key with no contributing observation
+/// is omitted entirely, so a lookup miss is the natural "no history" signal. The
+/// map keys carry the raw (un-sanitized) route and stop tokens recovered from the
+/// store, so a leg keys against it with the same `gtfsId` the writer recorded.
+pub fn read_tier2_typical_delay_index(
+    root: &Path,
+) -> std::collections::HashMap<(String, i32, String), TypicalDelay> {
+    use std::collections::HashMap;
+    // Accumulate (p50-weighted sum, p85-weighted sum, total count) per key.
+    let mut acc: HashMap<(String, i32, String), (f64, f64, u64)> = HashMap::new();
+    for (key, agg) in read_tier2_map(root) {
+        let Some((route, direction, stop)) = split_stop_key(&key) else {
+            continue;
+        };
+        let readout = Readout::of(&agg);
+        // A cell only contributes when it has observations *and* both percentiles
+        // read back — a zero-count or degenerate cell would skew the mean.
+        let (Some(p50), Some(p85), count) = (readout.p50_s, readout.p85_s, readout.count) else {
+            continue;
+        };
+        if count == 0 {
+            continue;
+        }
+        let entry = acc.entry((route, direction, stop)).or_insert((0.0, 0.0, 0));
+        entry.0 += p50 * count as f64;
+        entry.1 += p85 * count as f64;
+        entry.2 += count;
+    }
+    acc.into_iter()
+        .filter(|(_, (_, _, total))| *total > 0)
+        .map(|(k, (p50_sum, p85_sum, total))| {
+            let t = total as f64;
+            (
+                k,
+                TypicalDelay {
+                    p50_s: p50_sum / t,
+                    p85_s: p85_sum / t,
+                    count: total,
+                },
+            )
+        })
+        .collect()
+}
+
 /// Recover the `(route, direction, stop)` triple from a full Tier-2 key
 /// `route/dir/stop/bucket/daytype`, reversing [`sanitize_token`] on the route and
 /// stop fields. `None` when the key isn't the exact five-field leaf shape or a
@@ -509,5 +576,75 @@ mod tests {
         assert!(read_tier2_on_time_index(tmp.path()).is_empty());
         std::fs::write(tmp.path().join(TIER2_FILE), b"{ not json").unwrap();
         assert!(read_tier2_on_time_index(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn typical_delay_index_is_count_weighted_and_keyed_by_raw_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut map = BTreeMap::new();
+        // One slice, all delayed ~600s → p50 and p85 land in the high bins; the
+        // key carries the raw `ATAC:MEA` gtfsId the writer recorded.
+        let mut late = Tier2::default();
+        for _ in 0..6 {
+            late.observe(600);
+        }
+        map.insert(
+            tier2_key("ATAC:MEA", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+            late,
+        );
+        seed(tmp.path(), &map);
+
+        let index = read_tier2_typical_delay_index(tmp.path());
+        let td = index
+            .get(&("ATAC:MEA".to_string(), 0, "70001".to_string()))
+            .copied()
+            .expect("keyed by the raw gtfsId tokens");
+        assert_eq!(td.count, 6);
+        // All observations sit at +600s, so both percentiles are positive and the
+        // tail is at least the median.
+        assert!(td.p50_s > 0.0, "p50 was {}", td.p50_s);
+        assert!(td.p85_s >= td.p50_s, "p85 {} < p50 {}", td.p85_s, td.p50_s);
+    }
+
+    #[test]
+    fn typical_delay_index_weights_busy_slices_more() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut map = BTreeMap::new();
+        // am-peak: 10 obs all early (~-120s); pm-peak: 1 obs very late (~1800s).
+        // The count-weighted p50 must lean toward the busy early slice, not sit at
+        // the midpoint of the two cells.
+        let mut early = Tier2::default();
+        for _ in 0..10 {
+            early.observe(-120);
+        }
+        let mut late = Tier2::default();
+        late.observe(1800);
+        map.insert(
+            tier2_key("R", 0, "S", TodBucket::AmPeak, DayType::Weekday),
+            early,
+        );
+        map.insert(
+            tier2_key("R", 0, "S", TodBucket::PmPeak, DayType::Weekday),
+            late,
+        );
+        seed(tmp.path(), &map);
+
+        let index = read_tier2_typical_delay_index(tmp.path());
+        let td = index
+            .get(&("R".to_string(), 0, "S".to_string()))
+            .copied()
+            .unwrap();
+        assert_eq!(td.count, 11);
+        // The busy early slice dominates → the weighted p50 stays well below the
+        // single late slice's contribution.
+        assert!(td.p50_s < 600.0, "p50 leaned late: {}", td.p50_s);
+    }
+
+    #[test]
+    fn typical_delay_index_is_empty_for_missing_or_corrupt_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(read_tier2_typical_delay_index(tmp.path()).is_empty());
+        std::fs::write(tmp.path().join(TIER2_FILE), b"{ not json").unwrap();
+        assert!(read_tier2_typical_delay_index(tmp.path()).is_empty());
     }
 }

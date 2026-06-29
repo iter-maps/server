@@ -897,3 +897,176 @@ async fn routing_unknown_rerank_profile_is_a_passthrough() {
     assert_eq!(body, ECO_PLAN.as_bytes());
     assert!(!String::from_utf8_lossy(&body).contains("rerankScore"));
 }
+
+// --- opt-in no-RT historical delay prediction (ADR 0030) --------------------
+
+/// POST a routing query opting into historical delay prediction.
+fn routing_req_predict() -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/otp/gtfs/v1?predict=historical")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"query":"{plan{itineraries{legs{mode}}}}"}"#))
+        .unwrap()
+}
+
+/// A two-itinerary plan for the predict path: itinerary 0's leg has NO live RT
+/// (`realTime: false`, the annotatable case); itinerary 1's leg carries live RT
+/// (`realTime: true`) and must never be annotated. Both ride route DELAYED at
+/// stop 70001 / direction 0, so they share a Tier-2 key — the only difference is
+/// the live flag, proving the authoritative floor.
+const PREDICT_PLAN: &str = r#"{"data":{"plan":{"itineraries":[
+  {"duration":600,"legs":[{"transitLeg":true,"mode":"BUS","realTime":false,"route":{"gtfsId":"DELAYED"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"70001"}}}]},
+  {"duration":700,"legs":[{"transitLeg":true,"mode":"BUS","realTime":true,"arrivalDelay":42,"route":{"gtfsId":"DELAYED"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"70001"}}}]}
+]}}}"#;
+
+/// Seed reliability so route DELAYED at 70001/0 has a clearly positive typical
+/// delay (all observations ~600s late) across an am-peak weekday cell.
+fn seed_predict_reliability(root: &Path) {
+    let mut late = Tier2::default();
+    for _ in 0..10 {
+        late.observe(600);
+    }
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(
+        tier2_key("DELAYED", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+        late,
+    );
+    write(
+        &root.join("reliability").join(TIER2_FILE),
+        &serde_json::to_vec(&map).unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn routing_predict_annotates_rtless_leg_but_not_the_live_one() {
+    // End-to-end authoritative-floor proof: same Tier-2 key, two legs differing
+    // only by the live `realTime` flag. The RT-less leg gains a historical
+    // `predictedDelay`; the live leg is left exactly as upstream sent it.
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, PREDICT_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_predict_reliability(dir.path());
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_predict()).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let its = v["data"]["plan"]["itineraries"].as_array().unwrap();
+    // Order preserved — annotation never reorders.
+    assert_eq!(its[0]["legs"][0]["route"]["gtfsId"], "DELAYED");
+    assert_eq!(its[1]["legs"][0]["route"]["gtfsId"], "DELAYED");
+
+    // Itinerary 0: RT-less → annotated with a positive historical delay + tag.
+    let pd = &its[0]["legs"][0]["predictedDelay"];
+    assert_eq!(pd["source"], "historical");
+    assert!(pd["seconds"].as_f64().unwrap() > 0.0, "expected a late p85");
+    assert!(pd["sampleCount"].as_u64().unwrap() >= 10);
+    assert!(its[0].get("predictedDelaySummary").is_some());
+
+    // Itinerary 1: live RT → never annotated, live field intact.
+    assert!(its[1]["legs"][0].get("predictedDelay").is_none());
+    assert_eq!(its[1]["legs"][0]["arrivalDelay"], 42);
+    assert!(its[1].get("predictedDelaySummary").is_none());
+}
+
+#[tokio::test]
+async fn routing_predict_with_no_history_adds_no_field() {
+    // The flag is set but the store is empty → no leg can resolve a typical delay,
+    // so no annotation is added (a gap with no history stays a gap).
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, PREDICT_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap(); // no reliability/ written
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_predict()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!String::from_utf8_lossy(&body).contains("predictedDelay"));
+}
+
+#[tokio::test]
+async fn routing_predict_feed_prefixed_ids_match_unprefixed_index() {
+    // OTP sends `FEED:LOCAL` ids; the index is keyed by the bare locals. Prove the
+    // ADR 0027 normalization lands the annotation through the real handler.
+    const PREFIXED: &str = r#"{"data":{"plan":{"itineraries":[
+      {"duration":600,"legs":[{"transitLeg":true,"mode":"BUS","realTime":false,"route":{"gtfsId":"ATAC:DELAYED"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"ATAC:70001"}}}]}
+    ]}}}"#;
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, PREFIXED, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_predict_reliability(dir.path()); // keyed by the bare "DELAYED"/"70001"
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_predict()).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let pd = &v["data"]["plan"]["itineraries"][0]["legs"][0]["predictedDelay"];
+    assert_eq!(pd["source"], "historical");
+    assert!(pd["seconds"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn routing_predict_non_plan_body_passes_through_untouched() {
+    // An OTP error envelope on the predict path is not a plan → returned verbatim.
+    let err_body = r#"{"errors":[{"message":"no path found"}]}"#;
+    let (otp, _h) = otp_stub(StatusCode::OK, err_body).await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_predict_reliability(dir.path());
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_predict()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, err_body.as_bytes());
+}
+
+#[tokio::test]
+async fn routing_predict_malformed_json_passes_through_untouched() {
+    let (otp, _h) = otp_stub(StatusCode::OK, "{ not json at all").await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_predict()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"{ not json at all");
+}
+
+#[tokio::test]
+async fn routing_default_does_not_predict() {
+    // Without any flag the body is the byte-for-byte passthrough even though
+    // history exists — no `predictedDelay` injected.
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, PREDICT_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_predict_reliability(dir.path());
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_plain()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, PREDICT_PLAN.as_bytes());
+    assert!(!String::from_utf8_lossy(&body).contains("predictedDelay"));
+}
+
+#[tokio::test]
+async fn routing_rerank_and_predict_compose_on_one_buffer() {
+    // Both opt-ins together: the reranker reorders by reliability AND the annotator
+    // fills RT-less legs with a historical delay, on a single buffered plan.
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, TWO_ITIN_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_rerank_reliability(dir.path()); // FAST on-time, SLOW late
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/otp/gtfs/v1?rerank=reliability&predict=historical")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"query":"{plan{itineraries{legs{mode}}}}"}"#))
+        .unwrap();
+    let (status, _, body) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    // Rerank applied: FAST (on-time) leads SLOW.
+    assert_eq!(itinerary_routes(&body), vec!["FAST", "SLOW"]);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let its = v["data"]["plan"]["itineraries"].as_array().unwrap();
+    // Rerank score present.
+    assert_eq!(its[0]["reliabilityScore"], serde_json::json!(1.0));
+    // Predict applied: the RT-less legs (TWO_ITIN_PLAN has no realTime flag) carry
+    // a historical annotation from the seeded history.
+    assert_eq!(its[0]["legs"][0]["predictedDelay"]["source"], "historical");
+    assert_eq!(its[1]["legs"][0]["predictedDelay"]["source"], "historical");
+}

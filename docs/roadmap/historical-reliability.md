@@ -1,4 +1,4 @@
-# Historical reliability archive (RT ingestion + rollup tier + read side built)
+# Historical reliability archive (RT ingestion + rollup + read side + rerank + no-RT prediction built)
 
 An efficient archive of past delays/cancellations (and past road traffic) that
 feeds reliability ranking and prediction when no live signal exists. Third scoped
@@ -17,11 +17,20 @@ exception to stateless P7 (aggregate-only).
   size-bounded Tier-2 reader moved into `iter-core`, and the gateway serves
   `GET /reliability/{route}/{direction}/{stop}` over it (all tod-bucket/day-type
   cells for a stop), fail-soft, with no gateway→worker dependency.
-- **Remaining:** an in-process reranker that consumes Tier-2 for itinerary
-  ranking; past road traffic; a possible DuckDB/Parquet scale-up if the per-host
-  volume ever warrants it.
+- **Built (ADR 0026 + 0027 + 0028):** the in-process **reranker** that consumes
+  Tier-2 for itinerary ranking — opt-in `?rerank=<profile>`, a pure post-proxy
+  core that stably reorders the plan by a soft composite (reliability + transfers
+  + walking + carbon), with OTP feed-prefix→bare-local id normalization.
+- **Built (ADR 0030):** the **no-RT delay prediction** — opt-in
+  `?predict=historical` annotates each RT-less transit leg with its historical
+  typical delay (p85 headline, p50 + sample count alongside, `source:
+  "historical"`) from the count-weighted Tier-2 typical-delay index. Live realtime
+  is the authoritative floor: a leg with `realTime: true` is never annotated.
+  Additive, fail-soft, and composes with the reranker on the same buffered plan.
+- **Remaining:** past road traffic; a possible DuckDB/Parquet scale-up if the
+  per-host volume ever warrants it.
 - **Note:** the recorder is critical-path — history is unrecoverable — and
   persists from the first poll; the read side degrades to "no history yet" until
   the archive fills.
 
-Decision: ADR 0015, 0022, 0023, 0024
+Decision: ADR 0015, 0022, 0023, 0024, 0026, 0027, 0028, 0030
