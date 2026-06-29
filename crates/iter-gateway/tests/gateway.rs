@@ -30,6 +30,7 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
         glyphs_dir: data_dir.join("static/glyphs"),
         sprite_dir: data_dir.join("static/sprite"),
         overlays_dir: data_dir.join("output/overlays"),
+        reliability_dir: data_dir.join("reliability"),
         overlay_kinds: vec!["metro-stations".to_string(), "transit-lines".to_string()],
         region_country: "italy".to_string(),
         default_lang: "it".to_string(),
@@ -409,4 +410,150 @@ async fn related_places_unknown_address_is_empty_not_error() {
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["related"].as_array().unwrap().len(), 0);
+}
+
+// --- reliability read endpoint (ADR 0024) -----------------------------------
+
+use iter_core::reliability::rollup::{DayType, Tier2, TodBucket};
+use iter_core::reliability::store_read::{TIER2_FILE, TIER2_MAX_BYTES, tier2_key};
+
+/// Seed `reliability/tier2.json` with one AM-peak weekday cell for MEA/0/70001.
+fn seed_tier2(root: &Path) {
+    let mut agg = Tier2::default();
+    for d in [0, 0, 0, 600] {
+        agg.observe(d); // 3 on-time, 1 late → on-time rate 0.75.
+    }
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(
+        tier2_key("MEA", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+        agg,
+    );
+    write(
+        &root.join("reliability").join(TIER2_FILE),
+        &serde_json::to_vec(&map).unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn reliability_returns_the_cell_for_a_present_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    seed_tier2(root);
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    let (status, ct, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("application/json"));
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["route"], "MEA");
+    assert_eq!(v["direction"], "0"); // echoed verbatim as the caller's token
+    assert_eq!(v["stop"], "70001");
+    let cells = v["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 1);
+    assert_eq!(cells[0]["todBucket"], "am-peak");
+    assert_eq!(cells[0]["dayType"], "weekday");
+    assert_eq!(cells[0]["sampleCount"], 4);
+    assert_eq!(cells[0]["onTimeRate"], 0.75);
+    assert!(cells[0]["p50S"].is_number());
+}
+
+#[tokio::test]
+async fn reliability_absent_key_is_fail_soft_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    seed_tier2(root);
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    // A stop with no history → 200 with an empty cell list, never a 404/500.
+    let (status, _, body) = send(&app, get("/reliability/MEA/0/99999")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn reliability_missing_store_is_fail_soft_empty() {
+    // No reliability dir at all (the worker never ran) → empty, not an error.
+    let (_d, app) = populated();
+    let (status, _, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn reliability_corrupt_store_is_fail_soft_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(&root.join("reliability").join(TIER2_FILE), b"{ not json");
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    let (status, _, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn reliability_traversal_param_is_fail_soft_empty() {
+    // A `..`-laden path param must not read outside the reliability dir. The
+    // router URL-decodes the segment; the read sanitizes it to a flat key that
+    // can only miss. Plant a file one level up to prove it is never read. The
+    // authoritative containment proof is the store_read unit test; here we pin
+    // that the full router+decode+handler path stays fail-soft and that the
+    // handler echoes the decoded segment back rather than acting on it.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    seed_tier2(root);
+    write(&root.join("secret.json"), br#"{"leaked":true}"#);
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    // `%2e%2e%2f` decodes to `../`. Whatever the router yields as the route
+    // segment, the handler must return an empty, non-leaking 200.
+    let (status, _, body) = send(&app, get("/reliability/%2e%2e%2f%2e%2e%2fsecret/0/x")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"].as_array().unwrap().len(), 0);
+    // The handler echoes the decoded route token verbatim — it never joined it
+    // onto a path — and the direction parses cleanly.
+    assert_eq!(v["route"], "../../secret");
+    assert_eq!(v["direction"], "0");
+    let text = String::from_utf8(body).unwrap();
+    assert!(
+        !text.contains("leaked"),
+        "endpoint leaked an out-of-dir file"
+    );
+}
+
+#[tokio::test]
+async fn reliability_non_integer_direction_is_fail_soft_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    seed_tier2(root);
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    // A non-numeric direction can't key any cell → empty, not a 400/500.
+    let (status, _, body) = send(&app, get("/reliability/MEA/notanint/70001")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"].as_array().unwrap().len(), 0);
+    // The unparseable token is echoed verbatim, not the i32::MIN miss sentinel.
+    assert_eq!(v["direction"], "notanint");
+}
+
+#[tokio::test]
+async fn reliability_oversized_store_is_fail_soft_empty() {
+    // A Tier-2 file past the size cap is treated as corrupt and read as empty,
+    // bounding memory. Lock the cap into the served contract (the core layer
+    // proves the stat-before-read; this proves the endpoint inherits it).
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let blob = vec![b' '; (TIER2_MAX_BYTES + 1) as usize];
+    write(&root.join("reliability").join(TIER2_FILE), &blob);
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    let (status, _, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"].as_array().unwrap().len(), 0);
 }

@@ -17,39 +17,17 @@ use crate::jobs::rt_reliability::StopEvent;
 use crate::reliability::rollup::{
     DayType, Readout, Tier1, Tier2, TodBucket, day_type_of, tod_bucket_from_hour,
 };
+// The read side (key shape, Tier-2 filename, sanitizer) is shared with the
+// gateway via iter-core so the on-disk layout has a single owner (ADR 0024).
+use iter_core::reliability::store_read::{TIER2_FILE, sanitize_token, tier2_key};
 
 /// On-disk subdirectories under the reliability root.
 const TIER0_DIR: &str = "tier0";
 const TIER1_DIR: &str = "tier1";
-const TIER2_FILE: &str = "tier2.json";
 
 /// Tier-0 retention window in days; partitions older than this are dropped
 /// wholesale (file unlink), never edited row-by-row.
 pub const TIER0_RETAIN_DAYS: i64 = 10;
-
-/// Sanitize an external key component to a safe path token, *injectively*: keeps
-/// `[A-Za-z0-9_-]` verbatim and escapes every other byte — including `.`, path
-/// separators, control chars, and NUL — as `+HH` (uppercase hex of each UTF-8
-/// byte). The `+` escape marker is itself escaped, so the mapping is reversible
-/// and distinct inputs never collide on the same token. Because `.` is always
-/// escaped, a `..` traversal segment can never appear; the result also contains
-/// no path separator, so it can never escape its parent dir. Empty input
-/// collapses to a placeholder.
-pub fn sanitize_token(raw: &str) -> String {
-    if raw.is_empty() {
-        return "_".to_string();
-    }
-    let mut out = String::with_capacity(raw.len());
-    for &b in raw.as_bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-') {
-            out.push(b as char);
-        } else {
-            out.push('+');
-            out.push_str(&format!("{b:02X}"));
-        }
-    }
-    out
-}
 
 /// The filesystem store. All public methods are fail-soft at the call site: they
 /// return `anyhow::Result` and the caller logs-and-continues, since losing
@@ -334,24 +312,6 @@ fn tier1_key(
     )
 }
 
-/// Build a Tier-2 record key (no service-date; carries the day-type instead).
-fn tier2_key(
-    route_id: &str,
-    direction_id: i32,
-    stop_id: &str,
-    bucket: TodBucket,
-    day_type: DayType,
-) -> String {
-    format!(
-        "{}/{}/{}/{}/{}",
-        sanitize_token(route_id),
-        direction_id,
-        sanitize_token(stop_id),
-        bucket.token(),
-        day_type.token(),
-    )
-}
-
 /// The parsed parts of a Tier-1 key needed to re-key into Tier-2.
 struct Tier1Key {
     route_id: String,
@@ -372,22 +332,9 @@ impl Tier1Key {
             route_id: parts[0].to_string(),
             direction_id: parts[1].parse().ok()?,
             stop_id: parts[2].to_string(),
-            tod_bucket: bucket_from_token(parts[4])?,
+            tod_bucket: TodBucket::from_token(parts[4])?,
         })
     }
-}
-
-/// Inverse of `TodBucket::token`.
-fn bucket_from_token(token: &str) -> Option<TodBucket> {
-    Some(match token {
-        "early" => TodBucket::Early,
-        "am-peak" => TodBucket::AmPeak,
-        "midday" => TodBucket::Midday,
-        "pm-peak" => TodBucket::PmPeak,
-        "evening" => TodBucket::Evening,
-        "night" => TodBucket::Night,
-        _ => return None,
-    })
 }
 
 /// The serialized Tier-0 line (borrowed for the write side).
@@ -711,21 +658,6 @@ mod tests {
         assert_eq!(t2.len(), 2, "two buckets → two Tier-2 keys");
         assert!(t2.keys().any(|k| k.contains("am-peak")));
         assert!(t2.keys().any(|k| k.contains("midday")));
-    }
-
-    #[test]
-    fn bucket_token_round_trip_is_total() {
-        for b in [
-            TodBucket::Early,
-            TodBucket::AmPeak,
-            TodBucket::Midday,
-            TodBucket::PmPeak,
-            TodBucket::Evening,
-            TodBucket::Night,
-        ] {
-            assert_eq!(bucket_from_token(b.token()), Some(b));
-        }
-        assert_eq!(bucket_from_token("not-a-bucket"), None);
     }
 
     #[test]

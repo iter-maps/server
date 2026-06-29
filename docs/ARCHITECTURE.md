@@ -50,6 +50,11 @@ scale horizontally with no coordination. Surfaces:
   (never 404).
 - **Overlays** — `GET /overlays/{metro-stations,transit-lines}.geojson`,
   fail-soft (missing file → client draws nothing, no error).
+- **Reliability** — `GET /reliability/{route}/{direction}/{stop}` serves the
+  worker-written Tier-2 archive (p50/p85/p90 delay, on-time rate, sample count
+  per tod-bucket/day-type), fail-soft (absent/missing/corrupt store → empty
+  cells, never an error) and path-safe; the read side lives in `iter-core` so the
+  gateway never depends on the worker (ADR 0024).
 - **Offline** — `GET /offline/{extract,bundle}`; range-reads the clustered
   PMTiles (via the pinned `go-pmtiles` CLI) and zips a bundle. Abuse guards
   (6 deg² area cap, z14 clamp, 3 concurrent) are the only protection on this
@@ -108,7 +113,9 @@ Tier-0 partition, folded into bounded warm Tier-1 aggregates (mergeable
 moments + a fixed-bin delay histogram), then merged into a tiny permanent Tier-2
 keyed on (route, direction, stop, tod-bucket, day-type) — the worker's first
 persistent state, holding vehicle/road aggregates only (never a user/device/
-session key). Jobs are
+session key). The pure rollup core and the path-safe Tier-2 reader live in
+`iter-core`, so the gateway serves this archive (`GET /reliability/*`, ADR 0024)
+without depending on the worker. Jobs are
 a `name`/`interval`/`run` abstraction — a job failure is logged and the schedule
 continues (unlike a pipeline step, which aborts), so a transient upstream blip
 never takes the worker down; it scales independently of the request path.

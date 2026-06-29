@@ -36,6 +36,9 @@ pub struct GatewayConfig {
     pub glyphs_dir: PathBuf,
     pub sprite_dir: PathBuf,
     pub overlays_dir: PathBuf,
+    /// Root of the worker-written reliability archive. The gateway reads the cold
+    /// Tier-2 tier under it; must match the worker's `RELIABILITY_DIR` (ADR 0024).
+    pub reliability_dir: PathBuf,
     /// Overlay kinds the resolved region declares (drives the served allowlist).
     pub overlay_kinds: Vec<String>,
     /// The region's country (first segment of the region path, e.g. `italy`).
@@ -107,6 +110,9 @@ impl GatewayConfig {
             glyphs_dir: dir("GLYPHS_DIR", &data_dir, "static/glyphs"),
             sprite_dir: dir("SPRITE_DIR", &data_dir, "static/sprite"),
             overlays_dir: dir("OVERLAYS_DIR", &data_dir, "output/overlays"),
+            // Mirrors the worker default: the reliability tree is a sibling of
+            // `graph/` under the artifact root; `RELIABILITY_DIR` overrides it.
+            reliability_dir: dir("RELIABILITY_DIR", &data_dir, "reliability"),
             health_path: dir("HEALTH_PATH", &data_dir, "output/health.json"),
             offline: OfflineCaps {
                 max_area_deg2: config::parse(

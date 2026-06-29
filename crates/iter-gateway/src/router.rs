@@ -5,8 +5,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
 use crate::{
-    correlate, enrich, glyphs, health, live_trains, manifest, offline, overlays, proxy, sprite,
-    styles, tiles,
+    correlate, enrich, glyphs, health, live_trains, manifest, offline, overlays, proxy,
+    reliability, sprite, styles, tiles,
 };
 
 /// Assemble the gateway router from the capability modules' routes.
@@ -20,6 +20,11 @@ pub fn build(state: AppState) -> Router {
         .route("/styles/{file}", get(styles::style))
         .route("/glyphs/{fontstack}/{range}", get(glyphs::glyph))
         .route("/overlays/{file}", get(overlays::overlay))
+        // reliability: read the worker-written Tier-2 archive (ADR 0024)
+        .route(
+            "/reliability/{route}/{direction}/{stop}",
+            get(reliability::reliability),
+        )
         // routing + geocoding reverse-proxy to the external engines
         .route("/otp/gtfs/v1", post(proxy::routing))
         .route("/api", get(proxy::geocode_api))
