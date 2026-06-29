@@ -8,6 +8,7 @@ use iter_region_drivers::{LiveTrainsProvider, address_normalizer, live_trains_pr
 use crate::cache::TtlCache;
 use crate::config::GatewayConfig;
 use crate::correlate::CorrelationIndex;
+use crate::reliability_cache::Tier2Cache;
 
 /// Shared, cheaply-cloneable handle for axum handlers. The gateway is
 /// stateless across requests (the caches below are derived, disposable upstream
@@ -31,6 +32,10 @@ pub struct AppState {
     /// Country-specific live-trains provider, selected from the resolved region's
     /// country (ADR 0017). The generic handlers dispatch through it.
     pub live_trains: Arc<dyn LiveTrainsProvider>,
+    /// mtime-validated memo of the parsed Tier-2 reliability map, shared by the
+    /// read endpoint, the reranker, and the no-RT annotator (ADR 0032). Derived,
+    /// disposable soft-state — rebuilt from `tier2.json` on restart.
+    pub reliability: Arc<Tier2Cache>,
 }
 
 impl AppState {
@@ -57,6 +62,7 @@ impl AppState {
             cfg.viaggiatreno_url.clone(),
             cfg.trenitalia_region,
         );
+        let reliability = Arc::new(Tier2Cache::new(cfg.reliability_dir.clone()));
         Ok(Self {
             cfg: Arc::new(cfg),
             http,
@@ -66,6 +72,7 @@ impl AppState {
             offline_gate,
             correlations,
             live_trains,
+            reliability,
         })
     }
 }

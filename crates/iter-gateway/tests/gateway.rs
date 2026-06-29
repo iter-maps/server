@@ -558,6 +558,106 @@ async fn reliability_oversized_store_is_fail_soft_empty() {
     assert_eq!(v["cells"].as_array().unwrap().len(), 0);
 }
 
+// --- Tier-2 read cache: mtime-validated, fail-soft (ADR 0032) ---------------
+
+/// Force `tier2.json`'s mtime to differ from its current value, simulating a
+/// worker rollup rewrite. std has no public set-mtime and a same-tick rewrite can
+/// reuse the coarse timestamp, so re-touch until the OS stamps a new mtime — the
+/// cache only needs the value to *differ*.
+fn bump_tier2_mtime(root: &Path) {
+    let path = root.join("reliability").join(TIER2_FILE);
+    let before = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    loop {
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let now = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if now != before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Reseed `tier2.json` with a single MEA/0/70001 weekday cell whose on-time rate
+/// is `on_time / total`, then bump the mtime so the cache reloads.
+fn reseed_tier2(root: &Path, on_time: usize, total: usize) {
+    let mut agg = Tier2::default();
+    for i in 0..total {
+        agg.observe(if i < on_time { 0 } else { 900 });
+    }
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(
+        tier2_key("MEA", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+        agg,
+    );
+    write(
+        &root.join("reliability").join(TIER2_FILE),
+        &serde_json::to_vec(&map).unwrap(),
+    );
+    bump_tier2_mtime(root);
+}
+
+#[tokio::test]
+async fn reliability_read_reflects_a_worker_rollup_rewrite() {
+    // The cache must serve the seeded data, then reflect a rewritten store on the
+    // next read (a changed mtime), so a worker rollup is never masked.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    seed_tier2(root); // 3 on-time of 4 → 0.75
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    let (_, _, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"][0]["onTimeRate"], 0.75);
+
+    // The worker rewrites Tier-2: now all 4 are on-time.
+    reseed_tier2(root, 4, 4);
+    let (status, _, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        v["cells"][0]["onTimeRate"], 1.0,
+        "cache must pick up the rewritten store"
+    );
+}
+
+#[tokio::test]
+async fn reliability_read_picks_up_an_appearing_store() {
+    // Cache starts cold against a store that does not exist yet (empty, fail-soft),
+    // then the worker writes it for the first time — the next read must reflect it.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    let (status, _, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"].as_array().unwrap().len(), 0);
+
+    seed_tier2(root); // the worker's first write
+    let (_, _, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cells"].as_array().unwrap().len(), 1);
+    assert_eq!(v["cells"][0]["onTimeRate"], 0.75);
+}
+
+#[tokio::test]
+async fn reliability_read_is_stable_across_repeated_reads() {
+    // Same store, many reads through the cache — every response is identical to a
+    // direct first read, proving the cache hit returns the same data.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    seed_tier2(root);
+    let app = router::build(AppState::new(config_for(root.to_path_buf())).unwrap());
+
+    let (_, _, first) = send(&app, get("/reliability/MEA/0/70001")).await;
+    for _ in 0..5 {
+        let (status, _, body) = send(&app, get("/reliability/MEA/0/70001")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, first, "a cache hit must be byte-identical");
+    }
+}
+
 // --- opt-in itinerary reranking (ADR 0026) ----------------------------------
 
 /// Stand up a throwaway OTP stub on a loopback port that answers every request
@@ -765,6 +865,52 @@ async fn routing_rerank_orders_reliable_itinerary_first() {
     // Schema preserved: legs/duration untouched.
     assert_eq!(its[0]["duration"], 700);
     assert_eq!(its[0]["legs"][0]["route"]["gtfsId"], "FAST");
+}
+
+#[tokio::test]
+async fn routing_rerank_reflects_a_worker_rollup_rewrite() {
+    // The reranker reads through the same mtime-validated cache (ADR 0032). A
+    // worker rewrite that flips the reliability must flip the order on the next
+    // request — the cache never masks a rollup.
+    let (otp, _h) = otp_stub(StatusCode::OK, TWO_ITIN_PLAN).await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    seed_rerank_reliability(root); // FAST on-time, SLOW late
+    let app = gateway_with_otp(otp, root.to_path_buf());
+
+    let (_, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(itinerary_routes(&body), vec!["FAST", "SLOW"]);
+
+    // The worker rewrites Tier-2 with the reliability swapped: SLOW now on-time,
+    // FAST now late. Bump the mtime so the cache reloads.
+    let mut on_time = Tier2::default();
+    let mut late = Tier2::default();
+    for _ in 0..10 {
+        on_time.observe(0);
+        late.observe(900);
+    }
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(
+        tier2_key("SLOW", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+        on_time,
+    );
+    map.insert(
+        tier2_key("FAST", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+        late,
+    );
+    write(
+        &root.join("reliability").join(TIER2_FILE),
+        &serde_json::to_vec(&map).unwrap(),
+    );
+    bump_tier2_mtime(root);
+
+    let (status, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        itinerary_routes(&body),
+        vec!["SLOW", "FAST"],
+        "cache must pick up the rewritten store and reorder"
+    );
 }
 
 #[tokio::test]
@@ -1000,6 +1146,53 @@ async fn routing_predict_feed_prefixed_ids_match_unprefixed_index() {
     let pd = &v["data"]["plan"]["itineraries"][0]["legs"][0]["predictedDelay"];
     assert_eq!(pd["source"], "historical");
     assert!(pd["seconds"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn routing_predict_reflects_a_worker_rollup_rewrite() {
+    // The predict annotator reads through the same mtime-validated cache (ADR
+    // 0032) as the reranker. A worker rewrite that raises the typical delay must
+    // raise the annotated `predictedDelay` on the next request — the cache never
+    // masks a rollup for the third reader either.
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, PREDICT_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    seed_predict_reliability(root); // route DELAYED ~600s late
+    let app = gateway_with_otp(otp, root.to_path_buf());
+
+    let (_, _, body) = send(&app, routing_req_predict()).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let before = v["data"]["plan"]["itineraries"][0]["legs"][0]["predictedDelay"]["seconds"]
+        .as_f64()
+        .unwrap();
+
+    // The worker rewrites Tier-2 with a much larger typical delay. Bump the mtime
+    // so the cache reloads, then assert the fresher, larger delay surfaces.
+    let mut later = Tier2::default();
+    for _ in 0..10 {
+        later.observe(3000);
+    }
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(
+        tier2_key("DELAYED", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+        later,
+    );
+    write(
+        &root.join("reliability").join(TIER2_FILE),
+        &serde_json::to_vec(&map).unwrap(),
+    );
+    bump_tier2_mtime(root);
+
+    let (status, _, body) = send(&app, routing_req_predict()).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let after = v["data"]["plan"]["itineraries"][0]["legs"][0]["predictedDelay"]["seconds"]
+        .as_f64()
+        .unwrap();
+    assert!(
+        after > before,
+        "cache must pick up the rewritten store: {after} should exceed {before}"
+    );
 }
 
 #[tokio::test]

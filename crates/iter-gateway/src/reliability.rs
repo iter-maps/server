@@ -15,7 +15,7 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use iter_contracts::reliability::{ReliabilityCell, ReliabilityResponse};
-use iter_core::reliability::store_read::read_tier2_cells;
+use iter_core::reliability::store_read::tier2_cells_from;
 
 use crate::state::AppState;
 
@@ -32,12 +32,15 @@ pub async fn reliability(
     // it never reaches the response body.
     let direction_id: i32 = direction.parse().unwrap_or(i32::MIN);
     // The read is bounded and fail-soft inside iter-core: a missing/corrupt store
-    // yields no cells. The blocking file read is small (Tier-2 is tiny) but we
-    // still hop it off the async worker to keep the runtime clean.
-    let root = state.cfg.reliability_dir.clone();
+    // yields no cells. The map comes from the mtime-validated cache (ADR 0032):
+    // usually a cheap Arc clone, occasionally a re-read+parse on a worker rollup.
+    // We hop it onto a blocking worker so a cache-miss disk read never stalls the
+    // async runtime, and never hold a lock across the await — the cache's own
+    // lock is released before `map()` returns.
+    let cache = state.reliability.clone();
     let (route_q, stop_q) = (route.clone(), stop.clone());
     let cells = tokio::task::spawn_blocking(move || {
-        read_tier2_cells(&root, &route_q, direction_id, &stop_q)
+        tier2_cells_from(&cache.map(), &route_q, direction_id, &stop_q)
     })
     .await
     .unwrap_or_default();

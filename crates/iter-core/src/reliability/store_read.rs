@@ -128,6 +128,18 @@ pub fn read_tier2_cells(
     direction_id: i32,
     stop_id: &str,
 ) -> Vec<Tier2Cell> {
+    tier2_cells_from(&read_tier2_map(root), route_id, direction_id, stop_id)
+}
+
+/// [`read_tier2_cells`] over an already-parsed map. Identical logic, but the
+/// caller owns the parse — used by the gateway's mtime-validated cache (ADR
+/// 0032) to derive cells without re-reading `tier2.json` per request.
+pub fn tier2_cells_from(
+    map: &std::collections::BTreeMap<String, Tier2>,
+    route_id: &str,
+    direction_id: i32,
+    stop_id: &str,
+) -> Vec<Tier2Cell> {
     // The key shape is `route/dir/stop/bucket/daytype`; we match the first three
     // sanitized components exactly and decode the trailing slice tokens.
     let prefix = format!(
@@ -137,7 +149,7 @@ pub fn read_tier2_cells(
         sanitize_token(stop_id),
     );
     let mut cells = Vec::new();
-    for (key, agg) in read_tier2_map(root) {
+    for (key, agg) in map {
         let Some(rest) = key.strip_prefix(&prefix) else {
             continue;
         };
@@ -155,7 +167,7 @@ pub fn read_tier2_cells(
         cells.push(Tier2Cell {
             tod_bucket,
             day_type,
-            readout: Readout::of(&agg),
+            readout: Readout::of(agg),
         });
     }
     cells
@@ -173,14 +185,23 @@ pub fn read_tier2_cells(
 pub fn read_tier2_on_time_index(
     root: &Path,
 ) -> std::collections::HashMap<(String, i32, String), f64> {
+    on_time_index_from(&read_tier2_map(root))
+}
+
+/// [`read_tier2_on_time_index`] over an already-parsed map — the gateway's
+/// cache (ADR 0032) derives the reranker index from the cached map rather than
+/// re-reading `tier2.json` per routing request.
+pub fn on_time_index_from(
+    map: &std::collections::BTreeMap<String, Tier2>,
+) -> std::collections::HashMap<(String, i32, String), f64> {
     use std::collections::HashMap;
     // Accumulate (weighted sum, total count) per key, then divide.
     let mut acc: HashMap<(String, i32, String), (f64, u64)> = HashMap::new();
-    for (key, agg) in read_tier2_map(root) {
-        let Some((route, direction, stop)) = split_stop_key(&key) else {
+    for (key, agg) in map {
+        let Some((route, direction, stop)) = split_stop_key(key) else {
             continue;
         };
-        let readout = Readout::of(&agg);
+        let readout = Readout::of(agg);
         let (Some(rate), count) = (readout.on_time_rate, readout.count) else {
             continue;
         };
@@ -227,14 +248,23 @@ pub struct TypicalDelay {
 pub fn read_tier2_typical_delay_index(
     root: &Path,
 ) -> std::collections::HashMap<(String, i32, String), TypicalDelay> {
+    typical_delay_index_from(&read_tier2_map(root))
+}
+
+/// [`read_tier2_typical_delay_index`] over an already-parsed map — the gateway's
+/// cache (ADR 0032) derives the no-RT annotator index from the cached map
+/// rather than re-reading `tier2.json` per routing request.
+pub fn typical_delay_index_from(
+    map: &std::collections::BTreeMap<String, Tier2>,
+) -> std::collections::HashMap<(String, i32, String), TypicalDelay> {
     use std::collections::HashMap;
     // Accumulate (p50-weighted sum, p85-weighted sum, total count) per key.
     let mut acc: HashMap<(String, i32, String), (f64, f64, u64)> = HashMap::new();
-    for (key, agg) in read_tier2_map(root) {
-        let Some((route, direction, stop)) = split_stop_key(&key) else {
+    for (key, agg) in map {
+        let Some((route, direction, stop)) = split_stop_key(key) else {
             continue;
         };
-        let readout = Readout::of(&agg);
+        let readout = Readout::of(agg);
         // A cell only contributes when it has observations *and* both percentiles
         // read back — a zero-count or degenerate cell would skew the mean.
         let (Some(p50), Some(p85), count) = (readout.p50_s, readout.p85_s, readout.count) else {

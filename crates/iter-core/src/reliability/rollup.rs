@@ -262,7 +262,9 @@ fn is_easter_monday(year: i64, month: u32, day: u32) -> bool {
 }
 
 /// Days since 1970-01-01 → `YYYYMMDD` (Howard Hinnant's `civil_from_days`).
-fn ymd_from_days(z: i64) -> String {
+/// `pub` so the worker's rollup job reuses the one copy (ADR 0032) instead of
+/// keeping its own; it is the inverse of [`days_from_ymd`].
+pub fn ymd_from_days(z: i64) -> String {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;

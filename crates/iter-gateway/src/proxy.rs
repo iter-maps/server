@@ -12,9 +12,8 @@ use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use iter_core::ApiError;
-use iter_core::reliability::store_read::{
-    read_tier2_on_time_index, read_tier2_typical_delay_index,
-};
+use iter_core::reliability::rollup::Tier2;
+use iter_core::reliability::store_read::{on_time_index_from, typical_delay_index_from};
 
 use crate::annotate::{DelayLookup, TypicalDelay, annotate_plan};
 use crate::http::ApiResult;
@@ -125,13 +124,16 @@ async fn postprocess_routing(
     // Buffer the upstream body. A read error here is a genuine upstream failure.
     let bytes = resp.bytes().await.map_err(|e| upstream_error(&e, "otp"))?;
 
-    // Transform on a blocking worker (a Tier-2 file read plus a JSON re-parse). The
+    // Transform on a blocking worker (a Tier-2 map fetch plus a JSON re-parse). The
     // closure owns the buffered bytes and returns either the rewritten body or the
     // original verbatim — an OTP error envelope or non-JSON body declines every
     // transform and passes through unchanged. No second copy of the body is kept.
-    let root = state.cfg.reliability_dir.clone();
+    // The Tier-2 map comes from the mtime-validated cache (ADR 0032): a cheap Arc
+    // clone on a hit, a re-read+parse only when the worker rewrote the file. The
+    // cache lock is released inside `map()`, so it is never held across an await.
+    let cache = state.reliability.clone();
     let body = tokio::task::spawn_blocking(move || {
-        try_postprocess(&root, &bytes, profile, predict).unwrap_or_else(|| bytes.to_vec())
+        try_postprocess(&cache.map(), &bytes, profile, predict).unwrap_or_else(|| bytes.to_vec())
     })
     .await
     .map_err(|_| ApiError::internal("routing post-process worker panicked"))?;
@@ -150,11 +152,11 @@ async fn postprocess_routing(
 /// legs with their historical typical delay (when `predict`). Returns the
 /// rewritten JSON bytes — or `None` when the body isn't a plan or no transform
 /// touched it (in which case the caller returns the original bytes). Each enabled
-/// transform reads the shared Tier-2 archive once (same dir as the read endpoint,
-/// ADR 0024) into the index it needs. This runs on a blocking worker (it touches
-/// the filesystem).
+/// transform derives its index from the same already-parsed Tier-2 map (served by
+/// the gateway's mtime-validated cache, ADR 0032 — same archive as the read
+/// endpoint, ADR 0024). This runs on a blocking worker.
 fn try_postprocess(
-    root: &std::path::Path,
+    map: &std::collections::BTreeMap<String, Tier2>,
     bytes: &[u8],
     profile: Option<Profile>,
     predict: bool,
@@ -163,9 +165,9 @@ fn try_postprocess(
     let mut touched = false;
 
     if let Some(profile) = profile {
-        // One bounded, fail-soft file read; an absent/corrupt store yields an empty
-        // index, so every leg misses and itineraries hold their order.
-        let index = read_tier2_on_time_index(root);
+        // Derive the on-time index from the cached map; an absent/corrupt store
+        // yields an empty map, so every leg misses and itineraries hold their order.
+        let index = on_time_index_from(map);
         let lookup = |route: &str, direction: i32, stop: &str| {
             index
                 .get(&(route.to_string(), direction, stop.to_string()))
@@ -177,9 +179,9 @@ fn try_postprocess(
     }
 
     if predict {
-        // A second bounded read for the typical-delay index. Annotation never
+        // The typical-delay index from the same cached map. Annotation never
         // reorders or overrides live RT; it only fills gaps additively.
-        let index = read_tier2_typical_delay_index(root);
+        let index = typical_delay_index_from(map);
         let lookup: &DelayLookup<'_> = &|route: &str, direction: i32, stop: &str| {
             index
                 .get(&(route.to_string(), direction, stop.to_string()))

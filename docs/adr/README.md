@@ -75,3 +75,4 @@ a typo) do not need one.
 - [0029](0029-multi-region-transit-overlay-model.md) — Multi-region transit-overlay model (overlay Phase 0)
 - [0030](0030-no-rt-historical-delay-annotation.md) — No-live-RT historical delay annotation in the gateway
 - [0031](0031-concourse-corridor-union.md) — Concourse corridor union (footprint dissolve)
+- [0032](0032-gateway-tier2-read-cache.md) — Gateway Tier-2 reliability read cache, mtime-validated

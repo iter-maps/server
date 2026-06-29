@@ -27,10 +27,17 @@ exception to stateless P7 (aggregate-only).
   "historical"`) from the count-weighted Tier-2 typical-delay index. Live realtime
   is the authoritative floor: a leg with `realTime: true` is never annotated.
   Additive, fail-soft, and composes with the reranker on the same buffered plan.
+- **Built (ADR 0032):** the gateway **memoizes the parsed Tier-2 map in-process**,
+  validated by the `tier2.json` mtime and shared across all three read paths (the
+  `/reliability` endpoint, the reranker, the no-RT annotator), so the routing hot
+  path drops a per-request disk read + JSON parse to a cheap `Arc` clone. Derived,
+  disposable soft-state — rebuilt from the regenerable store on restart, fail-soft,
+  P7-clean (not a new state exception); a changed mtime reloads, so a rollup is
+  never masked.
 - **Remaining:** past road traffic; a possible DuckDB/Parquet scale-up if the
   per-host volume ever warrants it.
 - **Note:** the recorder is critical-path — history is unrecoverable — and
   persists from the first poll; the read side degrades to "no history yet" until
   the archive fills.
 
-Decision: ADR 0015, 0022, 0023, 0024, 0026, 0027, 0028, 0030
+Decision: ADR 0015, 0022, 0023, 0024, 0026, 0027, 0028, 0030, 0032

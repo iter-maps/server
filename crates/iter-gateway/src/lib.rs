@@ -17,6 +17,7 @@ pub mod offline;
 pub mod overlays;
 pub mod proxy;
 pub mod reliability;
+pub mod reliability_cache;
 pub mod rerank;
 pub mod router;
 pub mod sprite;
