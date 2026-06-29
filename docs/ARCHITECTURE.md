@@ -97,8 +97,9 @@ civici baked in as low-importance house docs so location bias picks the right
 number. **OVERLAY** generates the transit overlays from the OSM clip in pure Rust —
 `transit-lines` (way-union line geometry) and `metro-stations` (concave-hull
 concourses smoothed into organic footprints via Chaikin corner-cutting +
-Visvalingam-Whyatt simplification, plus per-direction platform strips + exits),
-no shapely (ADR 0014). **STYLES** renders the four whitelisted MapLibre styles
+Visvalingam-Whyatt simplification, then dissolved with their overlapping platform
+strips into one footprint via `geo::unary_union` — ADR 0031 — plus per-direction
+platform strips + exits), no shapely (ADR 0014). **STYLES** renders the four whitelisted MapLibre styles
 (Standard / Transit × light / dark) into `output/styles/`, each wired to the
 region's tile source, the glyph endpoint, the sprite (Standard only), and the
 region's overlay sources, all via the literal `__BASE_URL__` token the gateway

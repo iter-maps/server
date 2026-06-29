@@ -74,3 +74,4 @@ a typo) do not need one.
 - [0028](0028-rerank-composite-soft-factors.md) — Composite soft itinerary reranking with profiles (wave 1b)
 - [0029](0029-multi-region-transit-overlay-model.md) — Multi-region transit-overlay model (overlay Phase 0)
 - [0030](0030-no-rt-historical-delay-annotation.md) — No-live-RT historical delay annotation in the gateway
+- [0031](0031-concourse-corridor-union.md) — Concourse corridor union (footprint dissolve)

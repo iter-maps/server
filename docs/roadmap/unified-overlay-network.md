@@ -21,8 +21,10 @@ routable flags.
   `transit-lines` is multi-region — the widened route set, `route_master`-preferred
   grouping with the `(network, mode, ref)` fallback, and additive `network` +
   `routable` identity props (`OSM:<network>:<ref>` for overlay-only lines), with
-  Rome's nine-line output byte-stable. Still remaining: the LOD-tiled PMTiles
-  delivery, the Europe-wide OSM widening, and corridor union (gated on a robust
-  polygon buffer).
+  Rome's nine-line output byte-stable. Corridor union landed (ADR 0031): the
+  metro-stations concourse dissolves its overlapping platform strips into one
+  footprint via `geo::unary_union`. Still remaining: the LOD-tiled PMTiles
+  delivery, the Europe-wide OSM widening, and the morphological buffer-close
+  (rounding concave inlets, gated on a robust polygon buffer).
 
-Decision: ADR 0018, ADR 0029
+Decision: ADR 0018, ADR 0029, ADR 0031

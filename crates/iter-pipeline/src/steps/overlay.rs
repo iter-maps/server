@@ -21,9 +21,10 @@
 //!
 //! `metro-stations`: per metro station, emit a `concourse` (concave hull of the
 //! station's stop/platform/exit points, smoothed into an organic footprint via
-//! Chaikin corner-cutting + Visvalingam-Whyatt simplification), one `platform`
-//! per direction-stop (a side strip offset along the real track), and an `exit`
-//! per `subway_entrance`.
+//! Chaikin corner-cutting + Visvalingam-Whyatt simplification, then the
+//! concourse dissolved with its overlapping platform strips into one footprint —
+//! ADR 0031), one `platform` per direction-stop (a side strip offset along the
+//! real track), and an `exit` per `subway_entrance`.
 //! Geometry is computed in local-planar metres (`geo` concave hull, manual
 //! perpendicular offset).
 
@@ -35,8 +36,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use geo::coordinate_position::CoordPos;
 use geo::{
-    Area, ConcaveHull, ConvexHull, CoordinatePosition, LineString, MultiPoint, Point as GeoPoint,
-    Polygon, SimplifyVwPreserve, Validation, coord,
+    Area, Centroid, ConcaveHull, ConvexHull, CoordinatePosition, LineString, MultiPoint,
+    Point as GeoPoint, Polygon, SimplifyVwPreserve, Validation, coord, unary_union,
 };
 use osmpbf::{Element, ElementReader};
 use serde_json::{Value, json};
@@ -618,6 +619,9 @@ fn build_metro_stations(clip: &Path, driver: &dyn TransitOverlayDriver) -> anyho
     let mut hull_pts: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
     // station slug → just the stop points, which smoothing must not drop
     let mut stop_pts: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
+    // station slug → the platform strip rings (metres) that overlap the
+    // concourse; these dissolve into the concourse footprint (ADR 0031).
+    let mut plat_rings: HashMap<String, Vec<Vec<(f64, f64)>>> = HashMap::new();
 
     for r in &rels {
         let terminus = r
@@ -642,6 +646,10 @@ fn build_metro_stations(clip: &Path, driver: &dyn TransitOverlayDriver) -> anyho
                     .entry(slug.clone())
                     .or_default()
                     .extend(ring.iter().copied());
+                plat_rings
+                    .entry(slug.clone())
+                    .or_default()
+                    .push(ring.clone());
                 let coords: Vec<Value> = ring
                     .iter()
                     .map(|(x, y)| {
@@ -686,13 +694,24 @@ fn build_metro_stations(clip: &Path, driver: &dyn TransitOverlayDriver) -> anyho
     let mut features = Vec::new();
     for slug in slugs {
         let stops = stop_pts.get(slug).map(Vec::as_slice).unwrap_or(&[]);
-        if let Some(ring) = station_hull(proj, &hull_pts[slug], stops) {
-            features.push(json!({
-                "type": "Feature",
-                "properties": { "kind": "concourse", "station": slug, "level": 0 },
-                "geometry": { "type": "Polygon", "coordinates": [ring] },
-            }));
-        }
+        let Some(hull) = station_hull_m(&hull_pts[slug], stops) else {
+            continue;
+        };
+        // Corridor union (ADR 0031): dissolve the concourse hull with this
+        // station's platform strips so an overhanging strip merges into one
+        // footprint instead of emitting overlapping pieces. A station whose
+        // strips already sit inside the hull is byte-unchanged.
+        let plats = plat_rings.get(slug).map(Vec::as_slice).unwrap_or(&[]);
+        let footprint = dissolve_footprint(&hull, plats, stops);
+        let ring: Vec<Value> = footprint
+            .iter()
+            .map(|(x, y)| Value::Array(from_m(proj, *x, *y).iter().map(|v| json!(v)).collect()))
+            .collect();
+        features.push(json!({
+            "type": "Feature",
+            "properties": { "kind": "concourse", "station": slug, "level": 0 },
+            "geometry": { "type": "Polygon", "coordinates": [ring] },
+        }));
     }
     features.extend(platforms);
     features.extend(exits);
@@ -907,15 +926,11 @@ fn nearest_station(centroids: &[(String, f64, f64)], x: f64, y: f64) -> Option<(
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-/// The concourse footprint of a station's points as a lon/lat ring: a concave
-/// hull (convex-hull fallback for sparse stations) smoothed into an organic
-/// shape. `stop_pts` are the platform stop points the footprint must still
-/// contain after smoothing.
-fn station_hull(
-    proj: Projection,
-    pts: &[(f64, f64)],
-    stop_pts: &[(f64, f64)],
-) -> Option<Vec<Value>> {
+/// The concourse footprint of a station's points as a closed metre ring: a
+/// concave hull (convex-hull fallback for sparse stations) smoothed into an
+/// organic shape. `stop_pts` are the platform stop points the footprint must
+/// still contain after smoothing.
+fn station_hull_m(pts: &[(f64, f64)], stop_pts: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     if pts.len() < 3 {
         return None;
     }
@@ -938,12 +953,121 @@ fn station_hull(
     if ring.len() < 4 {
         return None;
     }
-    let ring = smooth_ring(&ring, stop_pts);
+    Some(smooth_ring(&ring, stop_pts))
+}
+
+/// The concourse footprint as a lon/lat ring (projected `station_hull_m`).
+/// Retained for the geometry tests; the build path projects `station_hull_m`
+/// after the corridor dissolve.
+#[cfg(test)]
+fn station_hull(
+    proj: Projection,
+    pts: &[(f64, f64)],
+    stop_pts: &[(f64, f64)],
+) -> Option<Vec<Value>> {
+    let ring = station_hull_m(pts, stop_pts)?;
     Some(
         ring.iter()
             .map(|(x, y)| Value::Array(from_m(proj, *x, *y).iter().map(|v| json!(v)).collect()))
             .collect(),
     )
+}
+
+/// Corridor union (ADR 0031): dissolve a station's concourse `hull` ring with
+/// its overlapping platform/corridor strip `rings` into ONE clean footprint,
+/// instead of emitting separate overlapping polygons. All inputs are closed
+/// metre rings; the result is a closed metre ring.
+///
+/// Fail-soft and regression-safe:
+/// - With no strips, or when every strip already sits inside the hull (or sits
+///   *fully* outside it, touching nothing), the hull is returned
+///   **byte-unchanged** — a single-polygon / non-overlapping station never
+///   re-traces through the boolean op. Only a strip that genuinely straddles the
+///   hull edge (a vertex outside *and* a vertex inside/on it) is dissolved.
+/// - The union runs through `geo::unary_union` (i_overlay-backed). Of the output
+///   polygons we keep the one whose interior covers the hull centroid — the
+///   component that actually contains the station — not merely the largest by
+///   area, so a far escaping strip can't steal the selection. If none qualifies,
+///   or the dissolved ring is degenerate, not closed, invalid, or drops a stop
+///   point, the raw hull is kept. Non-finite coordinates short-circuit too.
+///   Any interior holes are dropped (exterior-only): a display footprint is a
+///   solid silhouette, and the stop-coverage guard still forces fallback if a
+///   stop would land in a hole.
+fn dissolve_footprint(
+    hull: &[(f64, f64)],
+    rings: &[Vec<(f64, f64)>],
+    stop_pts: &[(f64, f64)],
+) -> Vec<(f64, f64)> {
+    if hull.len() < 4 {
+        return hull.to_vec();
+    }
+    let hull_poly = Polygon::new(LineString::from(hull.to_vec()), vec![]);
+    if !hull_poly.is_valid() {
+        return hull.to_vec();
+    }
+
+    // Only strips that genuinely straddle the hull edge need dissolving — a
+    // vertex outside AND a vertex inside/on the ring. A strip already enclosed
+    // adds nothing; a strip that's *fully* disjoint (every vertex outside,
+    // touching nothing) would only re-trace the hull through the boolean op and
+    // could steal the area selection, so both stay on the byte-unchanged path.
+    let escaping: Vec<&Vec<(f64, f64)>> = rings
+        .iter()
+        .filter(|ring| {
+            ring.len() >= 4
+                && ring.iter().all(|(x, y)| x.is_finite() && y.is_finite())
+                && ring.iter().any(|(x, y)| {
+                    hull_poly.coordinate_position(&coord! { x: *x, y: *y }) == CoordPos::Outside
+                })
+                && ring.iter().any(|(x, y)| {
+                    hull_poly.coordinate_position(&coord! { x: *x, y: *y }) != CoordPos::Outside
+                })
+        })
+        .collect();
+    if escaping.is_empty() {
+        return hull.to_vec();
+    }
+
+    let mut polys = vec![hull_poly.clone()];
+    for ring in escaping {
+        let p = Polygon::new(LineString::from(ring.to_vec()), vec![]);
+        if p.is_valid() {
+            polys.push(p);
+        }
+    }
+    if polys.len() < 2 {
+        return hull.to_vec();
+    }
+
+    let union = unary_union(polys.iter());
+    // Pick the component that actually contains the station: the one whose
+    // interior covers the hull centroid. A straddling strip merges with the hull
+    // into a single connected component, but guarding by containment (not area)
+    // means a stray disjoint component can never be chosen as the footprint.
+    let hull_centroid = hull_poly.centroid().map(|c| coord! { x: c.x(), y: c.y() });
+    let Some(best) = union
+        .0
+        .iter()
+        .find(|p| hull_centroid.is_some_and(|c| p.coordinate_position(&c) != CoordPos::Outside))
+    else {
+        return hull.to_vec();
+    };
+    // Exterior only: holes are intentionally filled — a display footprint is a
+    // solid silhouette, and the stop guard below catches a stop inside a hole.
+    let out: Vec<(f64, f64)> = best.exterior().points().map(|p| (p.x(), p.y())).collect();
+
+    // Guard the dissolved ring the same way smoothing is guarded: it must be a
+    // valid, closed, simple polygon that still covers every stop point.
+    if out.len() < 4 || out.first() != out.last() || !best.is_valid() {
+        return hull.to_vec();
+    }
+    if stop_pts
+        .iter()
+        .any(|(x, y)| best.coordinate_position(&coord! { x: *x, y: *y }) == CoordPos::Outside)
+    {
+        return hull.to_vec();
+    }
+    out
 }
 
 /// Round a closed hull ring into an organic concourse footprint: Chaikin
@@ -1379,6 +1503,310 @@ mod tests {
                 "stop still covered after the WGS84 round trip"
             );
         }
+    }
+
+    // ── corridor union / footprint dissolve (ADR 0031) ───────────────────────
+
+    /// A platform strip that pokes out of the concourse hull dissolves into one
+    /// merged footprint: the dissolved ring grows to cover the overhang, stays a
+    /// valid closed polygon, and contains both the hull and the strip area.
+    #[test]
+    fn dissolve_merges_an_overhanging_strip_into_one_footprint() {
+        // A 100×60 concourse hull and a strip sticking out past its top edge.
+        let hull = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 60.0),
+            (0.0, 60.0),
+            (0.0, 0.0),
+        ];
+        let strip = vec![
+            (40.0, 50.0),
+            (60.0, 50.0),
+            (60.0, 90.0), // 30 m above the hull's top edge
+            (40.0, 90.0),
+            (40.0, 50.0),
+        ];
+        let out = dissolve_footprint(&hull, std::slice::from_ref(&strip), &[]);
+        assert_ne!(out, hull, "the overhang forced a real dissolve");
+        let p = poly(&out);
+        assert!(p.is_valid(), "dissolved footprint is a valid polygon");
+        assert_eq!(out.first(), out.last(), "closed ring");
+        // One footprint that covers the hull interior AND the strip overhang.
+        assert_ne!(
+            p.coordinate_position(&coord! { x: 50.0, y: 30.0 }),
+            CoordPos::Outside,
+            "covers the hull interior"
+        );
+        assert_ne!(
+            p.coordinate_position(&coord! { x: 50.0, y: 80.0 }),
+            CoordPos::Outside,
+            "covers the strip overhang the raw hull missed"
+        );
+        // The raw hull did NOT cover the overhang — proving the union added area.
+        assert_eq!(
+            poly(&hull).coordinate_position(&coord! { x: 50.0, y: 80.0 }),
+            CoordPos::Outside,
+        );
+    }
+
+    /// A strip already contained in the hull is a no-op: the footprint is the raw
+    /// hull, byte-for-byte (a non-overlapping / contained station never re-traces
+    /// through the boolean op, so the shipped output is unchanged).
+    #[test]
+    fn dissolve_is_byte_unchanged_when_strip_is_inside_hull() {
+        let hull = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 0.0),
+        ];
+        let inside = vec![
+            (40.0, 40.0),
+            (60.0, 40.0),
+            (60.0, 60.0),
+            (40.0, 60.0),
+            (40.0, 40.0),
+        ];
+        let out = dissolve_footprint(&hull, &[inside], &[(50.0, 50.0)]);
+        assert_eq!(out, hull, "contained strip leaves the hull byte-identical");
+    }
+
+    /// No strips at all (a sparse station): the footprint is the raw hull,
+    /// byte-for-byte.
+    #[test]
+    fn dissolve_with_no_strips_is_byte_unchanged() {
+        let hull = vec![
+            (0.0, 0.0),
+            (50.0, -10.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 0.0),
+        ];
+        assert_eq!(dissolve_footprint(&hull, &[], &[]), hull);
+    }
+
+    /// The dissolved footprint still contains the station's stop points, and a
+    /// degenerate hull (sub-quad ring) falls back unchanged.
+    #[test]
+    fn dissolve_preserves_stops_and_falls_back_on_degenerate_hull() {
+        let hull = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 60.0),
+            (0.0, 60.0),
+            (0.0, 0.0),
+        ];
+        let strip = vec![
+            (40.0, 40.0),
+            (60.0, 40.0),
+            (60.0, 100.0),
+            (40.0, 100.0),
+            (40.0, 40.0),
+        ];
+        let stops = vec![(10.0, 10.0), (90.0, 50.0), (50.0, 80.0)];
+        let out = dissolve_footprint(&hull, &[strip], &stops);
+        let p = poly(&out);
+        for (x, y) in &stops {
+            assert_ne!(
+                p.coordinate_position(&coord! { x: *x, y: *y }),
+                CoordPos::Outside,
+                "every stop stays covered after the dissolve"
+            );
+        }
+        // Degenerate hull: a triangle ring (<4 closed vertices) is handed back.
+        let tri = vec![(0.0, 0.0), (10.0, 0.0), (5.0, 10.0)];
+        assert_eq!(dissolve_footprint(&tri, &[], &[]), tri);
+    }
+
+    /// Fail-soft on malformed strip geometry: non-finite or sub-quad strip rings
+    /// are ignored, so a NaN-laced strip can never panic or corrupt the footprint
+    /// — the station falls back to its raw hull.
+    #[test]
+    fn dissolve_ignores_malformed_strips() {
+        let hull = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 0.0),
+        ];
+        let nan_strip = vec![
+            (40.0, 90.0),
+            (f64::NAN, 90.0),
+            (60.0, 120.0),
+            (40.0, 120.0),
+            (40.0, 90.0),
+        ];
+        let tiny_strip = vec![(50.0, 95.0), (51.0, 96.0)]; // sub-quad
+        let out = dissolve_footprint(&hull, &[nan_strip, tiny_strip], &[]);
+        assert_eq!(out, hull, "malformed strips are skipped, hull kept");
+    }
+
+    /// A strip sitting *entirely* outside the hull, touching nothing, must not be
+    /// dissolved: it would only re-trace the hull through the boolean op (breaking
+    /// byte stability) or steal the selection. The hull is returned byte-for-byte.
+    #[test]
+    fn dissolve_is_byte_unchanged_when_strip_is_fully_disjoint() {
+        let hull = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 0.0),
+        ];
+        // A strip far away that overlaps the hull nowhere.
+        let far = vec![
+            (200.0, 200.0),
+            (250.0, 200.0),
+            (250.0, 260.0),
+            (200.0, 260.0),
+            (200.0, 200.0),
+        ];
+        let out = dissolve_footprint(&hull, std::slice::from_ref(&far), &[(50.0, 50.0)]);
+        assert_eq!(out, hull, "a disjoint strip never enters the union");
+    }
+
+    /// When a genuine overhang and a far disjoint strip both "escape", the union
+    /// must keep the component containing the station (covering the overhang), not
+    /// the larger far strip. Guards the med finding: a bigger disjoint piece can't
+    /// steal the max-area selection and discard the real overhang.
+    #[test]
+    fn dissolve_keeps_station_component_not_the_larger_disjoint_strip() {
+        let hull = vec![
+            (0.0, 0.0),
+            (40.0, 0.0),
+            (40.0, 40.0),
+            (0.0, 40.0),
+            (0.0, 0.0),
+        ];
+        // A small strip straddling the top edge — the real overhang to merge.
+        let overhang = vec![
+            (10.0, 30.0),
+            (30.0, 30.0),
+            (30.0, 60.0),
+            (10.0, 60.0),
+            (10.0, 30.0),
+        ];
+        // A far disjoint 100×100 strip — area 10000, far larger than the merged
+        // body, and straddling its own nothing (it is fully outside the hull, so
+        // the predicate already excludes it; included here to prove robustness).
+        let big = vec![
+            (200.0, 200.0),
+            (300.0, 200.0),
+            (300.0, 300.0),
+            (200.0, 300.0),
+            (200.0, 200.0),
+        ];
+        let stops = vec![(20.0, 20.0)];
+        let out = dissolve_footprint(&hull, &[overhang, big], &stops);
+        let p = poly(&out);
+        // The footprint covers the hull centre and the overhang the hull missed.
+        assert_ne!(
+            p.coordinate_position(&coord! { x: 20.0, y: 20.0 }),
+            CoordPos::Outside,
+            "footprint contains the station, not the far strip"
+        );
+        assert_ne!(
+            p.coordinate_position(&coord! { x: 20.0, y: 50.0 }),
+            CoordPos::Outside,
+            "the genuine overhang merged in"
+        );
+        // The far disjoint strip's centre is NOT the emitted footprint.
+        assert_eq!(
+            p.coordinate_position(&coord! { x: 250.0, y: 250.0 }),
+            CoordPos::Outside,
+            "the far strip was never selected as the concourse"
+        );
+    }
+
+    /// The production build path stays byte-identical to the pre-union hull when a
+    /// station's strips are enclosed: `dissolve_footprint(station_hull_m(..), ..)`
+    /// equals `station_hull_m(..)`. This pins ADR 0031's byte-stability invariant
+    /// (the load-bearing path for the Rome golden) as a real regression guard, not
+    /// just prose, at the exact composition `build_metro_stations` uses.
+    #[test]
+    fn build_path_is_byte_identical_when_strips_are_enclosed() {
+        // A dense cluster of points whose smoothed concave hull encloses a small
+        // central strip — the common, non-overhanging station configuration.
+        let pts = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (50.0, -5.0),
+            (105.0, 50.0),
+            (50.0, 105.0),
+            (-5.0, 50.0),
+        ];
+        let stops = vec![(50.0, 50.0)];
+        let hull = station_hull_m(&pts, &stops).expect("hull builds");
+        // A strip well inside that smoothed hull, so nothing escapes.
+        let enclosed = vec![
+            (45.0, 45.0),
+            (55.0, 45.0),
+            (55.0, 55.0),
+            (45.0, 55.0),
+            (45.0, 45.0),
+        ];
+        let footprint = dissolve_footprint(&hull, std::slice::from_ref(&enclosed), &stops);
+        assert_eq!(
+            footprint, hull,
+            "an enclosed strip leaves the projected concourse ring byte-for-byte"
+        );
+    }
+
+    /// End-to-end through `build_metro_stations`: a Rome (ATAC) two-stop line
+    /// emits exactly one concourse per station, with the platforms still present
+    /// as their own features — the dissolve never drops or duplicates a station.
+    #[test]
+    fn metro_stations_emit_one_concourse_per_station() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("clip.osm.pbf");
+
+        let mut osm = OsmBuilder::new();
+        // Two stop nodes (named stations) plus a subway track way under them.
+        let s1 = osm.node(41.900, 12.490, &[("name", "Alpha")]);
+        let s2 = osm.node(41.905, 12.495, &[("name", "Beta")]);
+        // A track way passing through both stops so platform strips can form.
+        let t0 = osm.node(41.899, 12.489, &[]);
+        let t3 = osm.node(41.906, 12.496, &[]);
+        let track = osm.way_tagged(&[t0, s1, s2, t3], &[("railway", "subway")]);
+        let _ = track;
+        osm.relation(
+            &[("route", "subway"), ("ref", "A"), ("operator", "ATAC")],
+            &[(Member::Node, s1, "stop"), (Member::Node, s2, "stop")],
+        );
+        osm.write(&clip);
+
+        let fc = build_metro_stations(&clip, rome_driver().as_ref()).unwrap();
+        let feats = fc["features"].as_array().unwrap();
+        let concourses: Vec<&Value> = feats
+            .iter()
+            .filter(|f| f["properties"]["kind"] == json!("concourse"))
+            .collect();
+        // Exactly one concourse per named station — no duplicates, none dropped.
+        let stations: HashSet<&str> = concourses
+            .iter()
+            .map(|f| f["properties"]["station"].as_str().unwrap())
+            .collect();
+        assert_eq!(stations, HashSet::from(["alpha", "beta"]));
+        assert_eq!(concourses.len(), 2, "one footprint per station");
+        // Each concourse polygon is closed and non-degenerate.
+        for c in &concourses {
+            let ring = c["geometry"]["coordinates"][0].as_array().unwrap();
+            assert!(ring.len() >= 4, "closed concourse ring");
+            assert_eq!(ring.first(), ring.last(), "ring closes");
+        }
+        // Platforms are still emitted as their own features (additive layers).
+        assert!(
+            feats
+                .iter()
+                .any(|f| f["properties"]["kind"] == json!("platform")),
+            "platform strips remain as separate features"
+        );
     }
 
     // ── transit-lines (multi-region generalization, ADR 0029) ────────────────
@@ -2088,9 +2516,18 @@ mod tests {
         }
 
         fn way(&mut self, refs: &[i64]) -> i64 {
+            self.way_tagged(refs, &[])
+        }
+
+        fn way_tagged(&mut self, refs: &[i64], tags: &[(&str, &str)]) -> i64 {
             let id = self.alloc();
+            let (keys, vals) = self.tag_cols(tags);
             let mut w = Vec::new();
             field_varint(&mut w, 1, id as u64);
+            if !keys.is_empty() {
+                field_bytes(&mut w, 2, &packed(&keys));
+                field_bytes(&mut w, 3, &packed(&vals));
+            }
             let mut delta = Vec::new();
             let mut prev = 0i64;
             for &r in refs {

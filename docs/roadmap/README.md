@@ -84,10 +84,12 @@ pipeline and worker frameworks are in place. What remains:
   set ({subway, tram, light_rail, rail, regional_rail}), `route_master`-preferred
   grouping with a `(network, mode, ref)` fallback, and additive `network`/`routable`
   identity props (`OSM:<network>:<ref>` for overlay-only lines), with Rome's nine
-  lines byte-stable. **Remaining:** corridor union (merging buffered real-corridor
-  geometry into the concourse, gated on a robust polygon buffer); the unified-
-  overlay later phases (LOD PMTiles delivery, Europe OSM widening). Decisions: ADR
-  0014, ADR 0025, ADR 0029.
+  lines byte-stable. The metro-stations concourse dissolves its overlapping
+  platform strips into one footprint (corridor union via `geo::unary_union`, ADR
+  0031). **Remaining:** the morphological buffer-close (rounding concave inlets),
+  still gated on a robust pure-Rust polygon buffer; the unified-overlay later
+  phases (LOD PMTiles delivery, Europe OSM widening). Decisions: ADR 0014, ADR
+  0025, ADR 0029, ADR 0031.
 - **Style render** ✅ done (ADR 0025) — the `STYLES` pipeline step renders the four
   whitelisted MapLibre styles (Standard / Transit × light / dark) into
   `output/styles/`, each wired to the region's tile source, glyphs, the sprite
