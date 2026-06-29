@@ -37,7 +37,8 @@ ships with its tests in the same change.
   unless asked — commits stay local until the repo is told it's ready.
 - Write code that reads like the surrounding code: match its style and comment
   density. No AI-style over-explaining.
-- `concept/` (design blueprint) and `.build-map/` are **local-only reference,
-  git-excluded via `.git/info/exclude` — never commit them**. Cite the blueprint
-  as "concept doc NN" / "ADR NNNN (concept)", not as repo paths.
+- `concept/` and `.build-map/` are **local-only reference, git-excluded via
+  `.git/info/exclude` — never commit them**. Don't reference them, or any
+  private/roadmap source, in committed files. Cross-links between committed
+  artifacts (ADR → ADR, doc → committed doc) are fine.
 - Deferred work is tracked in [`docs/roadmap/`](docs/roadmap/README.md).

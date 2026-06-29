@@ -9,8 +9,8 @@
 
 Geocoding answers "where is X" with a flat GeoJSON list (name + coordinate +
 type). The app wants the arrival end of a journey to be a **place panel** —
-a one-liner, a summary, a photo, opening hours — not a bare pin (concept doc 20).
-That is a fusion-and-ranking layer *above* geocoding, not a geocoder change: the
+a one-liner, a summary, a photo, opening hours — not a bare pin. That is a
+fusion-and-ranking layer *above* geocoding, not a geocoder change: the
 `/api` response stays Photon-shaped (the client greps those `properties`), so
 enrichment is a **separate BFF surface**.
 
@@ -39,7 +39,7 @@ provenance + license**:
   license/author via the `imageinfo` `extmetadata` API, and serve the bytes
   through a gateway image route. `Image.proxied = true` for the open layer; the
   flag exists so a future commercial source whose ToS forbids proxying is
-  `false` (client-direct) — the one documented BFF exception (concept 20 §5).
+  `false` (client-direct) — the one documented BFF exception.
 - **Cache by canonical id with TTL + single-flight** (the existing `TtlCache`),
   since place facts change slowly; send a contact-carrying `User-Agent` (Wikimedia
   now enforces it) and back off on `429`.

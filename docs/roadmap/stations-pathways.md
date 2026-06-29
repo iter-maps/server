@@ -6,7 +6,7 @@ the station-cutout overlay (display) and the routing engine (accurate egress +
 transfers).
 
 - **Plugs into:** the pipeline station-extraction step, extending the Rome metro
-  cutout (doc 09 §2). New output: GTFS Pathways (`pathways.txt`, `levels.txt`) +
+  cutout. New output: GTFS Pathways (`pathways.txt`, `levels.txt`) +
   `transfers.txt` consumed by OTP (boarding-location snapping, subway-entrance
   fallback rungs).
 - **Data deps:** OSM indoor structures. Gate per station — Pathways are
@@ -16,5 +16,4 @@ transfers).
 - **Build order:** Rome/Lazio first (ATAC/COTRAL); other regions as OSM indoor
   coverage or NAP StopPlace+PathLink improves.
 
-Design: concept doc 27 — stations-and-pathways ·
 Decision: ADR 0019

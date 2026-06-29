@@ -7,12 +7,12 @@
 
 ## Context
 
-The blueprint's reference implementation split serving across a static file
+An earlier reference implementation split serving across a static file
 server and a separate gateway service (different ports). The Rust-owned surfaces
 — tiles, styles, glyphs, sprite, overlays, offline, live-trains, health, and the
 routing/geocoding proxy — could be one binary or several. They share a config,
-an error envelope, and a request profile, and are all stateless. The blueprint
-treats the service split as non-load-bearing.
+an error envelope, and a request profile, and are all stateless; the service
+split is not load-bearing.
 
 ## Decision
 
@@ -32,6 +32,6 @@ freshness, 5 fields) takes `/health` + `/health.json`; operator diagnostics use
 
 ## Alternatives considered
 
-- **Separate static + gateway binaries** (mirroring the blueprint) — more
-  deployment units for no benefit while the surfaces share everything.
+- **Separate static + gateway binaries** — more deployment units for no benefit
+  while the surfaces share everything.
 - **A binary per surface** — operational sprawl with no scaling payoff.

@@ -4,10 +4,9 @@ This log records the **architecturally-significant decisions** made building
 `iter-maps/server`. Each ADR is a small, immutable document capturing *one*
 decision: its context, what was decided, and the consequences.
 
-> These are **this repository's implementation decisions**. They are distinct
-> from the design blueprint's rationale capsules (referenced elsewhere as
-> "ADR NNNN (concept)"), which justify the *design* a rebuild honors. When a
-> repo ADR realizes a blueprint decision, it cites it.
+> These are **this repository's implementation decisions**, recording the *why*
+> behind the build so it survives in the repo rather than in commit messages and
+> chat logs.
 
 ## When an ADR is mandatory
 

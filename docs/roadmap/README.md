@@ -1,8 +1,8 @@
 # Roadmap
 
-An honest map of everything **not yet built**, each item pointed at its design
-source so there are no silent gaps. Three groups: external-engine integration,
-remaining Rust capabilities, and planned forward-looking features.
+An honest map of everything **not yet built**, each item pointed at its
+decision record so there are no silent gaps. Three groups: external-engine
+integration, remaining Rust capabilities, and planned forward-looking features.
 
 > **Cross-cutting:** [`region-decoupling.md`](region-decoupling.md) tracks moving
 > the Italy/Rome specifics out of the generic core (ADR 0017) — config-drivable
@@ -12,10 +12,8 @@ remaining Rust capabilities, and planned forward-looking features.
 
 The architecture this plugs into is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md):
 a stateless **gateway** (edge/BFF) fronting OTP + Photon, an idempotent
-**pipeline** (build tier), and an **iter-worker** (background jobs). "Design" /
-"Decision" pointers below name the design blueprint's documents and ADRs by
-number (e.g. "concept doc 16", "ADR 0009") — the structure-agnostic source of
-truth maintained alongside the project.
+**pipeline** (build tier), and an **iter-worker** (background jobs). "Decision"
+pointers below name the relevant ADRs by number (e.g. "ADR 0009").
 
 ## 1. External-engine integration (orchestrate-external)
 
@@ -34,24 +32,20 @@ flagged per item.
   with a url — today the ATAC `trip-updates` stream. **Remaining:** the **daily**
   static-graph rebuild (mandatory for calendar sparsity + trip-id churn) with a
   keep-old-in-RAM ~30–60 s swap.
-  Design: concept doc 05 — routing-engine, doc 10 — realtime-transit ·
   Decision: ADR 0009, 0020.
 - **Photon import + civici** ✅ done (ADR 0010) — the Photon index is built from
   the raw Italy dump (`photon.jar import`, embedded OpenSearch) enriched with
   Italian civici extracted via DuckDB from Overture addresses (bbox filter, dedup
   by street/number/city); serves `/api`, `/reverse`, `/status` (proven serving a
   real Rome civico). **Remaining:** all-Italy full-index scaling (prod host).
-  Design: concept doc 06 — geocoding-engine ·
   Decision: ADR 0010.
 - **planetiler PMTiles render** ✅ done — renders the OMT PMTiles v3 archive
   (z0–14, Hilbert-clustered, atomic-replaced) from the Geofabrik PBF + ancillaries
   (proven on real Monaco/Rome output). **Remaining:** all-Italy render (prod host)
   and the road-shield sprite.
-  Design: concept doc 07 — basemap-and-tiles, doc 08 — map-styling.
 - **osmium clips** ✅ done (the routing CLIP) — `osmium extract --bbox` for the
   region routing PBF; the rail-relation export for overlay/FL builders lands with
   the OVERLAY/FL work below.
-  Design: concept doc 04 — data-pipeline.
 - **FL NeTEx→GTFS** ✅ done (ADR 0016) — the worker streams the official Lazio
   NeTEx (quick-xml over gunzip) into a routable GTFS the OTP graph build consumes;
   proven on the real ~58 MB CCISS dataset (450 stops / 5 routes / 1,594 trips /
@@ -65,8 +59,7 @@ flagged per item.
   routes by `ref`. Fail-soft — no clip (the default) emits the feed exactly as
   before. **Remaining:** none core; a fuller per-pattern multi-segment shape is
   possible if OTP ever needs it.
-  Design: concept doc 11 — gateway-and-external-providers, doc 25/26 — rail
-  geometry · Decision: ADR 0016.
+  Decision: ADR 0016.
 
 ## 2. Remaining Rust capabilities
 
@@ -89,7 +82,7 @@ pipeline and worker frameworks are in place. What remains:
   if smoothing would invalidate the polygon, drop a stop, or distort the area).
   **Remaining:** corridor union (merging buffered real-corridor geometry into the
   concourse, gated on a robust polygon buffer) and the `STYLES` render step.
-  Design: concept doc 09 — overlays-geometry · Decision: ADR 0014.
+  Decision: ADR 0014.
 - **Pipeline refresh triggers** — the runner framework, the `FORCE_*`/`SKIP_*`
   knobs, and the build steps are implemented; the daily (`--gtfs` + graph) /
   monthly (`--osm`) refresh **triggers** remain. Best realized as a scheduled
@@ -99,13 +92,12 @@ pipeline and worker frameworks are in place. What remains:
   proven on the live ATAC feed) and the FL NeTEx→GTFS conversion; the persistent
   reliability **rollup** tier (Tier-0/1/2 + its P7-stateless exception) has now
   landed (ADR 0022) — its gateway read endpoint is the remaining gap.
-  Design: concept doc 04 — data-pipeline, doc 12 — deployment-and-operations ·
   Decision: ADR 0007.
 
 ## 3. Planned forward-looking features
 
 Documented designs, none built. One short file each, mapping the feature to its
-concept doc and ADR.
+decision record.
 
 | Feature | Plugs into | File |
 |---|---|---|

@@ -7,11 +7,11 @@
 
 ## Context
 
-The transit overlays (concept doc 09) — `transit-lines.geojson` (network line
-geometry) and `metro-stations.geojson` (platform/concourse/exit cutouts) — are
-generated from the region's OSM clip. The design blueprint's reference
-implementation uses Python + shapely (for the concave-hull concourse and the
-buffer/offset platform geometry). Pulling Python + shapely into the data-prep
+The transit overlays — `transit-lines.geojson` (network line geometry) and
+`metro-stations.geojson` (platform/concourse/exit cutouts) — are generated from
+the region's OSM clip. An earlier reference implementation uses Python + shapely
+(for the concave-hull concourse and the buffer/offset platform geometry).
+Pulling Python + shapely into the data-prep
 image would add a second language runtime and a heavy native stack purely for
 these two files, when every other pipeline step is Rust shelling to JVM/Go tools.
 The rest of the data-prep image is already large (planetiler, OTP, Photon,
@@ -29,7 +29,7 @@ We will **generate the overlays in pure Rust**, no Python/shapely:
   track deduped by way id) and emit one `MultiLineString` feature per line, with
   the GTFS `route_id`/colour joined from `routes.txt`. Output via `serde_json`.
 - **`metro-stations`** (next) uses the `geo` crate for the geometry primitives
-  the blueprint did in shapely — `ConcaveHull` for the concourse, buffering for
+  previously done in shapely — `ConcaveHull` for the concourse, buffering for
   platforms/close — in local-planar metres, back to WGS84. `geo` provides a
   native concave hull, so no shapely is needed.
 
@@ -44,15 +44,15 @@ it implements, warning-skipping the rest.
   in its tree (a duplicate of the workspace's 2.x) — accepted by cargo-deny.
 - **Concave-hull parity is not byte-exact:** `geo::ConcaveHull`'s concavity
   parameter is not shapely's `ratio`, so the metro-stations hulls will be tuned
-  to visual equivalence, and the blueprint's exact feature/vertex counts are
-  approximate sanity targets, not regression assertions.
+  to visual equivalence, and the reference feature/vertex counts are approximate
+  sanity targets, not regression assertions.
 - Polygon buffering in pure Rust is less battle-tested than GEOS; the
   metro-stations step may need geometry-validity hardening (documented when it
   lands).
 
 ## Alternatives considered
 
-- **Python + shapely (the blueprint reference)** — adds a language runtime + a
+- **Python + shapely (the earlier reference)** — adds a language runtime + a
   heavy native stack to the image for two small files; rejected on weight.
 - **osmium-export → parse OPL in Rust** — hits the `--add-unique-id` id-survival
   gotcha and needs a separate export pass; reading the PBF directly is simpler.

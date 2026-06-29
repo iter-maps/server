@@ -8,8 +8,8 @@
 ## Context
 
 Searching an address should surface what is *at* it — the restaurant at "Via
-Cavour 1" — as related results, not just the bare civico (concept doc 20 §2.2:
-record correlations, don't dedup them away). No open geocoder gives this:
+Cavour 1" — as related results, not just the bare civico: record correlations,
+don't dedup them away. No open geocoder gives this:
 Nominatim parents a POI to its *street*, never its house number; Pelias actively
 *deduplicates* a venue against its co-located address; Photon denormalizes the
 address onto the POI with no street→number index; Overture embeds a self-contained

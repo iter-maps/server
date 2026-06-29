@@ -14,5 +14,3 @@ Rank itineraries by weather, comfort, cost, eco-impact and accessibility
 - **Build order:** wave 1 is pure-gateway (weather + crowding + carbon +
   covered-transfer + explanations); waves 2–3 layer data-gated factors and
   learned client-side weights (server stays stateless, P7).
-
-Design: concept doc 16 — personalized-planning

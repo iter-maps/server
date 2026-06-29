@@ -7,10 +7,9 @@
 
 ## Context
 
-This backend is a ground-up rebuild whose design rationale (the blueprint) lives
-outside the code. As the rebuild makes its own implementation choices — crate
-boundaries, which engine to front, how to scale — that reasoning needs a home in
-the repo, or it evaporates into commit messages and chat logs and gets
+This backend is a ground-up rebuild. As it makes its own implementation choices
+— crate boundaries, which engine to front, how to scale — that reasoning needs a
+home in the repo, or it evaporates into commit messages and chat logs and gets
 re-litigated later.
 
 ## Decision

@@ -7,8 +7,8 @@
 
 ## Context
 
-The backend must scale from Rome to Italy and toward Europe (concept docs
-24–28), but region was encoded as scattered constants (the `BBOX_LAZIO` /
+The backend must scale from Rome to Italy and toward Europe, but region was
+encoded as scattered constants (the `BBOX_LAZIO` /
 `PMTILES_BOUNDS` / `CIVICI_BBOX` bboxes, a hardcoded `roma.pmtiles`, fixed
 overlay names, a fixed feed list, `TRENITALIA_REGION=5`). Adding a region would
 mean editing code in many places. Real transit is hierarchical: national rail,
@@ -35,11 +35,9 @@ the `italy` root; COTRAL/COTRAL-FERRO/FL at `lazio`; ATAC + metro overlays at
 - Adding a region (Milan, Paris, all of Europe) is **config + data, no
   recompile** — it fits the "clone + up", regenerable-artifact ethos.
 - Country-wide data (basemap, geocoding) is defined once at the root and shared,
-  generalizing the concept's "nationwide basemap/geocoding, scoped transit"
-  split.
+  generalizing the "nationwide basemap/geocoding, scoped transit" split.
 - Artifacts become `<region>.pmtiles` etc. — this renames `roma.pmtiles`, a
-  **client wire-contract change** to coordinate (the concept lists it as known
-  debt).
+  **client wire-contract change** to coordinate (a known debt to track).
 - A new `iter-region` crate owns the schema + resolver; resolution semantics
   must be precise and tested.
 

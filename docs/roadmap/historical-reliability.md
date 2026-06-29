@@ -18,5 +18,4 @@ exception to stateless P7 (aggregate-only).
 - **Note:** the recorder is critical-path — history is unrecoverable — and now
   persists from the first poll, ahead of the read-side.
 
-Design: concept doc 23 — historical-reliability ·
 Decision: ADR 0015, 0022

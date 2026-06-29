@@ -9,8 +9,7 @@ accidentally betray users.
 anything to the Iter Maps project or to any central endpoint. There is no central
 collector, by design.
 
-Source of policy: the project's OSS-operations design (concept doc 29 §5) and
-ADR 0024.
+Source of policy: ADR 0024.
 
 ## The three concerns
 
@@ -34,8 +33,7 @@ tunes ranking factors.
 - **Self-hoster-disableable.**
 
 It is a **scoped exception** to P7 (no readable user state) — the strictest of the
-user-data exceptions, because it observes people. Full model:
-`concept doc 22`.
+user-data exceptions, because it observes people.
 
 **Status: PLANNED / absent today.** Not implemented in the current backend.
 
@@ -50,8 +48,8 @@ running their own machine.
   monitoring their own infrastructure, and is the operator's to keep or discard.
 - It is **not user data** (machine/feed health).
 
-Reference model: `concept doc 12` (health.json, smoke test,
-logs; Prometheus / Grafana / Loki on the self-hoster's own host).
+Reference model: health.json, smoke test, and logs; Prometheus / Grafana / Loki
+on the self-hoster's own host.
 
 ### (c) Product / usage analytics — none by default
 

@@ -9,8 +9,7 @@ single scoped exception to the stateless P7 invariant.
   plaintext personal state.
 - **Data deps:** none external — client-encrypted blobs keyed by an opaque
   handle. Distinct from "sense-1" artifact-freshness sync, which is the
-  health/freshness manifest (doc 18 §4), not this.
+  health/freshness manifest, not this.
 - **Note:** holds opaque ciphertext only; remains regenerable/discardable.
 
-Design: concept doc 19 — synchronization ·
 Decision: ADR 0012

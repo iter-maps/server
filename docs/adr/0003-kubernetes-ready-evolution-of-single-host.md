@@ -7,8 +7,8 @@
 
 ## Context
 
-The design blueprint fixed "single host, container compose, no cloud
-control-plane" as an invariant (its P2). The owner wants this rebuild to also
+An earlier invariant fixed "single host, container compose, no cloud
+control-plane" as the deployment model. The owner wants this rebuild to also
 scale horizontally on Kubernetes — replicas and a worker tier — without
 abandoning the "clone + up" single-host default. Statelessness, externalized
 artifacts, and graceful drain make these compatible rather than conflicting.
@@ -23,8 +23,8 @@ themselves stay out of this repo (they belong in `iter-maps/deploy`).
 
 ## Consequences
 
-- A deliberate, owner-approved deviation from the blueprint's P2 — recorded here
-  so it isn't mistaken for an accident.
+- A deliberate, owner-approved deviation from the single-host-only model —
+  recorded here so it isn't mistaken for an accident.
 - Every service must hold no per-client state and must tolerate being replicated
   and rescheduled; readiness must gate traffic on artifact presence.
 - The stateful engines (OTP/Photon) scale narrowly (HA, not throughput); the
@@ -32,7 +32,7 @@ themselves stay out of this repo (they belong in `iter-maps/deploy`).
 
 ## Alternatives considered
 
-- **Honor P2 strictly (single host only)** — rejected by the owner; forecloses HA
-  and elastic scaling.
+- **Single host only** — rejected by the owner; forecloses HA and elastic
+  scaling.
 - **Kubernetes-only, drop single-host** — breaks the self-hoster "clone + up"
   promise that is core to the project.

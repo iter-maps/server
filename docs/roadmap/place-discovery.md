@@ -20,5 +20,4 @@ civico (an in-binary Italian address normalizer + Overture-POI bucket index).
   Wikivoyage editorial collections · 🚧 wave 3 commercial overlay · 🚧 the fuller
   entity-resolution + ranking blend.
 
-Design: concept doc 20 — place-discovery ·
 Decision: ADR 0011 (enrichment), ADR 0012 (correlation)

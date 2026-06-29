@@ -5,9 +5,7 @@ license obligations. These are **legal duties, not courtesy credits**, and they 
 **not the project's to relax** — they are conditions of the right to use the data at
 all.
 
-Sources: `concept doc 29` §4 and
-`concept doc 03`. Per-source catalog (URLs, refresh, quirks) lives in
-`concept doc 03`.
+The per-source catalog below covers URLs, refresh cadence, and quirks.
 
 ## Redistributed sources
 
@@ -49,8 +47,7 @@ Duty: **bundle the license text + copyright** with the served font files.
 **COTRAL, COTRAL-FERRO, and Trenitalia FL are undeclared / TBD.** They are usable for
 dev/beta but **must be cleared, or shipped disabled by default, before any public
 production release.** No TBD-licensed feed ships **enabled by default** until its
-license is cleared. (`concept doc 29` §4.3, §6.5; `concept doc 03` "Licenses to clear before
-public production".)
+license is cleared.
 
 ## Where attribution must appear (three runtime places)
 

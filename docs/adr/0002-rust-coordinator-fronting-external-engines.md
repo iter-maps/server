@@ -10,10 +10,9 @@
 The backend must serve journey routing and geocoding. Mature, memory-heavy
 engines already solve these well: OpenTripPlanner (GTFS+OSM routing) and Komoot
 Photon (OSM geocoding), both JVM. Reimplementing either in Rust would be a
-multi-year effort with worse results, and the blueprint already treats the
-engine choice as swappable, not load-bearing. What *is* load-bearing is the wire
-contract, the data pipeline, and the custom surfaces (tiles, styles, overlays,
-offline, live-trains).
+multi-year effort with worse results: the engine choice is swappable, not
+load-bearing. What *is* load-bearing is the wire contract, the data pipeline, and
+the custom surfaces (tiles, styles, overlays, offline, live-trains).
 
 ## Decision
 

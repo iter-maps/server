@@ -14,5 +14,4 @@ signal: tune crowding/reliability/traffic factors and gap-fill no-RT lines
 - **Build order:** wave 1 logs aggregates only; later waves add metro position
   inference, synthetic RT, road FCD.
 
-Design: concept doc 22 — crowd-telemetry ·
 Decision: ADR 0016

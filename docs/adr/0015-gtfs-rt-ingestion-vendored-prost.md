@@ -7,8 +7,8 @@
 
 ## Context
 
-Historical reliability (concept docs 10, 23) needs live GTFS-Realtime delays
-ingested continuously — history can't be back-filled, so the recorder must start
+Historical reliability needs live GTFS-Realtime delays ingested continuously —
+history can't be back-filled, so the recorder must start
 logging now even though the value accrues over weeks. ATAC publishes three
 keyless GTFS-RT protobuf feeds (trip-updates, vehicle-positions, service-alerts).
 Decoding protobuf in Rust normally means `prost` + `prost-build`, but

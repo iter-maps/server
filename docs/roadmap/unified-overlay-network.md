@@ -5,10 +5,10 @@ LOD-tiered network model — one geometry per line, with modes, identity, and
 routable flags.
 
 - **Plugs into:** the pipeline overlay-generation step, extending the shipped
-  Rome pass (doc 09): widen the route-type filter to
+  Rome pass: widen the route-type filter to
   {metro, tram, light_rail, rail, regional_rail}, prefer `route_master` grouping,
   add per-country entity-resolution heuristics, emit an extended property model.
-  Output is GeoJSON, consumed by scoped delivery (doc 28).
+  Output is GeoJSON, consumed by scoped delivery.
 - **Data deps:** OSM route relations at the overlay extent; per-region feeds to
   color/identify routable lines. Overlay-only lines (no routing feed) carry
   OSM-derived ids (`OSM:<network>:<ref>`).
@@ -20,5 +20,4 @@ routable flags.
   0014). Still remaining on the geometry side: corridor union (gated on a robust
   polygon buffer) and the `STYLES` render step.
 
-Design: concept doc 26 — transit-overlay-network-model ·
 Decision: ADR 0018

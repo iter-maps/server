@@ -13,5 +13,4 @@ internal model, and feed the personalized-planning road/car factor.
 - **Cache key:** (grid-cell × situation-id × validity-window); multi-layer
   geographic stacking.
 
-Design: concept doc 21 — traffic-data ·
 Decision: ADR 0015

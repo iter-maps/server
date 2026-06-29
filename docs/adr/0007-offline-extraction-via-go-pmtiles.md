@@ -10,9 +10,9 @@
 Offline pre-download returns a bbox-clipped PMTiles archive. Because the source
 archive is clustered, the clip is a cheap byte-range read — no tile re-render.
 Two ways to perform it: shell out to the pinned `go-pmtiles` CLI, or implement a
-PMTiles v3 reader/extractor in Rust (a future `iter-pmtiles` crate). The design
-blueprint already settled this (its ADR 0010: server-side range-extract via
-`go-pmtiles`), and the CLI is mature and exact.
+PMTiles v3 reader/extractor in Rust (a future `iter-pmtiles` crate). The CLI is
+mature and exact, and a server-side range-extract via `go-pmtiles` is the proven
+approach.
 
 ## Decision
 
