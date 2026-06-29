@@ -71,6 +71,14 @@ fn rerank_profile(query: Option<&str>) -> Option<Profile> {
 /// transport error, a non-`200`, a non-JSON or non-plan body, or a body that the
 /// rerank core declines all return the original response unchanged. Never 500s,
 /// never drops an itinerary.
+/// Whether a proxied routing response should be buffered and reranked: only a
+/// `200` advertising a `Content-Length` within the cap. A missing length (we
+/// will not buffer an unbounded body) or an oversized one streams through
+/// unchanged, so the buffered body is always bounded by `RERANK_MAX_BODY_BYTES`.
+fn rerankable(status: StatusCode, content_length: Option<u64>) -> bool {
+    status == StatusCode::OK && content_length.is_some_and(|len| len <= RERANK_MAX_BODY_BYTES)
+}
+
 async fn rerank_routing(
     state: &AppState,
     sent: Result<reqwest::Response, reqwest::Error>,
@@ -79,13 +87,11 @@ async fn rerank_routing(
     let resp = sent.map_err(|e| upstream_error(&e, "otp"))?;
     let status = resp.status();
 
-    // A non-`200`, or a plan whose advertised size blows past the buffer cap, is
-    // streamed straight through — we never buffer those. Only a successful,
-    // plausibly-sized plan is buffered+reranked.
-    let oversize = resp
-        .content_length()
-        .is_some_and(|len| len > RERANK_MAX_BODY_BYTES);
-    if status != StatusCode::OK || oversize {
+    // Only a successful plan advertising a within-cap `Content-Length` is
+    // buffered+reranked. A non-`200`, an oversized body, or a body with no
+    // advertised length (which we will not buffer unbounded) streams straight
+    // through unchanged — fail-soft, and the buffered body is always bounded.
+    if !rerankable(status, resp.content_length()) {
         return relay(Ok(resp), "otp").await;
     }
 
@@ -192,7 +198,23 @@ fn upstream_error(e: &reqwest::Error, upstream: &str) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Profile, rerank_profile};
+    use axum::http::StatusCode;
+
+    use super::{Profile, RERANK_MAX_BODY_BYTES, rerank_profile, rerankable};
+
+    #[test]
+    fn rerankable_only_for_ok_within_cap_advertised_length() {
+        // Bounded-buffer contract: rerank only a 200 advertising a within-cap
+        // length. A missing length (chunked) is never buffered — it would be an
+        // unbounded read — so it streams through unchanged, as do oversized and
+        // non-200 bodies.
+        assert!(rerankable(StatusCode::OK, Some(0)));
+        assert!(rerankable(StatusCode::OK, Some(RERANK_MAX_BODY_BYTES)));
+        assert!(!rerankable(StatusCode::OK, Some(RERANK_MAX_BODY_BYTES + 1)));
+        assert!(!rerankable(StatusCode::OK, None));
+        assert!(!rerankable(StatusCode::BAD_GATEWAY, Some(10)));
+        assert!(!rerankable(StatusCode::NOT_FOUND, None));
+    }
 
     #[test]
     fn rerank_profile_is_none_for_absent_or_unknown_flags() {
