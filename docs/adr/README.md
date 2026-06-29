@@ -78,3 +78,4 @@ a typo) do not need one.
 - [0032](0032-gateway-tier2-read-cache.md) — Gateway Tier-2 reliability read cache, mtime-validated
 - [0033](0033-weather-aware-rerank-factor.md) — Server-side Open-Meteo weather factor for the composite reranker
 - [0034](0034-weather-fetch-bounded-and-day-pinned.md) — Weather fetch: bounded response and journey-day pinning
+- [0035](0035-mode-aware-weather-exposure.md) — Mode-aware weather exposure in the rerank weather factor

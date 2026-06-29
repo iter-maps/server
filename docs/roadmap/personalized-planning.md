@@ -25,9 +25,17 @@ Rank itineraries by weather, comfort, cost, eco-impact and accessibility
   `reliabilityScore`). The **weather factor** (ADR 0033) is the gateway's first
   external runtime data dependency: a keyless Open-Meteo forecast for the journey's
   coarse (~1 km) origin, opt-in and default-off (`WEATHER_API_URL`), short-timeout,
-  TTL-cached, and fail-soft/neutral-on-failure — it scores an itinerary's
-  weather-exposed minutes (walking + outdoor waiting) against precipitation and
-  temperature extremes so bad-weather + high-exposure journeys rank lower.
-  **Remaining wave-1 factors:** crowding and covered-transfer scoring, plus
-  per-factor explanations. The carbon and weather constants are estimates and the
-  weights are unmeasured; learned/client-tuned weights are deferred to waves 2–3.
+  TTL-cached, and fail-soft/neutral-on-failure. It scores weather exposure **by
+  type** (ADR 0035): precipitation hits truly-outdoor minutes only (walking +
+  outdoor waiting — a vehicle keeps rain off for every mode), while temperature
+  extremes also hit in-vehicle minutes scaled by a per-mode climate-control
+  coefficient (air-conditioned rail/metro near-sheltered, bus/tram partially
+  exposed). So a rainy day favors any in-vehicle route incl. a bus, and a hot day
+  favors metro/rail over an equivalent bus. **Remaining wave-1 factors:** crowding
+  and covered-transfer scoring, plus per-factor explanations. The
+  covered/underground-transfer refinement (not counting a sheltered metro transfer
+  wait as outdoor) stays deferred — it needs station-topology data not yet built,
+  so every wait/transfer gap currently counts as outdoor. The carbon and weather
+  constants (including the per-mode temperature coefficients) are heuristic
+  estimates and the weights are unmeasured; learned/client-tuned weights are
+  deferred to waves 2–3.

@@ -18,10 +18,13 @@
 //! 3. **walking effort** — total walk-leg duration; less preferred.
 //! 4. **eco/carbon** — per-mode gCO2e/passenger-km intensity × leg distance,
 //!    summed; lower preferred.
-//! 5. **weather** — the journey's weather-exposed minutes (walking + outdoor
-//!    waiting) times a forecast badness; less preferred (ADR 0033). Neutral
-//!    (no effect) when no forecast is available — disabled, or the fetch failed —
-//!    so existing profile behaviour is unchanged unless weather is configured.
+//! 5. **weather** — the journey's weather exposure scored by type (ADR 0033,
+//!    0035): precipitation hits truly-outdoor minutes (walking + outdoor waiting)
+//!    while temperature extremes also hit in-vehicle minutes scaled per mode
+//!    (air-conditioned rail/metro sheltered, bus/tram partially exposed). Less
+//!    preferred. Neutral (no effect) when no forecast is available — disabled, or
+//!    the fetch failed — so existing profile behaviour is unchanged unless weather
+//!    is configured.
 //!
 //! Each raw factor is normalized **across the itineraries in this one response**
 //! (min-max, see `normalize_benefit`) into a benefit in `0.0..=1.0` where higher
@@ -298,8 +301,9 @@ struct Factors {
     walk_seconds: f64,
     /// Total estimated gCO2e across legs (lower is better).
     co2_grams: f64,
-    /// Weather-exposed minutes × forecast badness (lower is better). `0.0` when
-    /// there is no forecast, so the factor is neutral (ADR 0033).
+    /// Weather penalty: `precip_badness × outdoor-minutes + temp_badness ×
+    /// (outdoor + mode-scaled in-vehicle) minutes` (lower is better; ADR 0035).
+    /// `0.0` when there is no forecast, so the factor is neutral (ADR 0033).
     weather_penalty: f64,
 }
 
@@ -824,6 +828,104 @@ mod tests {
             })
             .collect();
         assert_eq!(routes, vec!["SHELTERED", "EXPOSED"]);
+    }
+
+    /// A hot, dry forecast: temperature extreme, no rain — so in-vehicle exposure
+    /// is mode-scaled and a bus is hotter than metro/rail (ADR 0035).
+    fn hot() -> Forecast {
+        Forecast {
+            temperature_c: 40.0,
+            precipitation_mm: 0.0,
+            apparent_temperature_c: Some(40.0),
+        }
+    }
+
+    /// A transit leg of an explicit mode and duration, sheltered from rain.
+    fn ride_leg(mode: &str, route: &str, secs: f64) -> Value {
+        json!({
+            "transitLeg": true, "mode": mode, "duration": secs,
+            "route": { "gtfsId": route }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })
+    }
+
+    #[test]
+    fn rain_favors_an_in_vehicle_route_over_a_walking_one() {
+        // In the rain a route that spends its time in a vehicle (even a bus) beats
+        // one with a long outdoor walk: precipitation hits outdoor-only time, so the
+        // bus ride takes no rain penalty while the walk does (ADR 0035). RIDE walks
+        // 60s then buses; WALK walks 1800s then buses — same modes, only walk time
+        // differs. A heavy-rain, comfortable-temperature forecast isolates precip.
+        let rainy = Forecast {
+            temperature_c: 18.0,
+            precipitation_mm: 8.0,
+            apparent_temperature_c: Some(18.0),
+        };
+        let ride = json!({ "legs": [
+            json!({ "transitLeg": false, "mode": "WALK", "duration": 60.0 }),
+            ride_leg("BUS", "RIDE", 1800.0),
+        ]});
+        let walk = json!({ "legs": [
+            json!({ "transitLeg": false, "mode": "WALK", "duration": 1800.0 }),
+            ride_leg("BUS", "WALK", 60.0),
+        ]});
+        let mut plan = plan_with(vec![walk, ride]);
+        assert!(rerank_plan(
+            &mut plan,
+            &no_history,
+            Profile::Comfort,
+            Some(&rainy)
+        ));
+        let routes: Vec<String> = plan["data"]["plan"]["itineraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|it| {
+                it["legs"][1]["route"]["gtfsId"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(routes, vec!["RIDE", "WALK"]);
+    }
+
+    #[test]
+    fn heat_favors_a_metro_route_over_an_equivalent_bus_route() {
+        // In a heatwave two otherwise-equivalent routes — same 1800s in-vehicle
+        // time, same (small) walk, no history — differ only in mode: METRO rides a
+        // SUBWAY leg, BUSY rides a BUS leg. The per-mode temperature coefficient
+        // bites: the bus cabin is hotter, so the metro route ranks ahead (ADR 0035).
+        // `ride_leg` carries no `distance`, so the eco/carbon factor is zero for both
+        // (carbon only accrues on legs with `distance`); the weather coefficient is
+        // the only differing factor, keeping this isolation edit-proof.
+        let metro = json!({ "legs": [
+            json!({ "transitLeg": false, "mode": "WALK", "duration": 60.0 }),
+            ride_leg("SUBWAY", "METRO", 1800.0),
+        ]});
+        let busy = json!({ "legs": [
+            json!({ "transitLeg": false, "mode": "WALK", "duration": 60.0 }),
+            ride_leg("BUS", "BUSY", 1800.0),
+        ]});
+        let mut plan = plan_with(vec![busy, metro]);
+        assert!(rerank_plan(
+            &mut plan,
+            &no_history,
+            Profile::Comfort,
+            Some(&hot())
+        ));
+        let routes: Vec<String> = plan["data"]["plan"]["itineraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|it| {
+                it["legs"][1]["route"]["gtfsId"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(routes, vec!["METRO", "BUSY"]);
     }
 
     #[test]

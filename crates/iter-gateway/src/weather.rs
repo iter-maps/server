@@ -1,11 +1,15 @@
 //! Weather-aware itinerary reranking — the gateway's first outbound runtime data
-//! dependency (ADR 0033). Two cooperating pieces live here:
+//! dependency (ADR 0033, 0035). Two cooperating pieces live here:
 //!
 //! 1. The **pure, I/O-free factor** ([`weather_penalty`]): given an itinerary's
-//!    legs and a [`Forecast`], it sums the journey's weather-*exposed* minutes
-//!    (walking + outdoor waiting/transfer time) and multiplies by a
-//!    `weather_badness` in `0.0..=1.0` derived from precipitation and extreme
-//!    heat/cold. The result is a raw penalty (higher is worse) the composite
+//!    legs and a [`Forecast`], it scores the journey's weather exposure split by
+//!    weather *type* (ADR 0035). **Precipitation** hits truly-outdoor minutes only
+//!    (walking + outdoor waiting/transfer time) — every vehicle, bus included,
+//!    keeps the rain off. **Temperature** extremes also hit in-vehicle minutes,
+//!    scaled by a per-mode climate-control coefficient (air-conditioned rail/metro
+//!    are nearly sheltered; bus/tram are partially exposed). Each exposure is
+//!    multiplied by its own badness component (`precip_badness`, `temp_badness`)
+//!    and the two are summed into a raw penalty (higher is worse) the composite
 //!    reranker min-max-normalizes across the response like any other factor, so a
 //!    bad-weather + high-exposure itinerary ranks **lower** while good weather or
 //!    zero exposure contributes nothing. With no forecast (disabled or a failed
@@ -24,6 +28,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+
+use crate::legkey::is_transit_leg;
 
 // --- weather-badness thresholds ---------------------------------------------
 //
@@ -50,6 +56,41 @@ const HEAT_SATURATION_C: f64 = 38.0;
 /// The badness contributed by a fully cold or fully hot hour.
 const TEMP_MAX_BADNESS: f64 = 0.6;
 
+// --- per-mode temperature exposure coefficients (ADR 0035) ------------------
+//
+// In-vehicle time is sheltered from *rain* for every mode, but temperature
+// comfort depends on the vehicle's climate control. These coefficients scale a
+// transit leg's in-vehicle minutes into temperature-exposed minutes: 0.0 means
+// the cabin fully neutralizes the outside temperature, 1.0 means the rider feels
+// the outdoor extreme as if standing in it. They are a **deliberate heuristic** —
+// we have no per-vehicle A/C data — chosen from the typical fleet reality that
+// metro/rail run reliably climate-controlled while many buses and trams do not.
+// Like the carbon and badness constants they are only ever compared relatively
+// within one response, so the ordering matters more than the exact values, and
+// retuning them later is a non-breaking change.
+
+/// Heavy/commuter/regional rail and metro/subway: reliably air-conditioned, so
+/// almost none of the outdoor temperature reaches the rider.
+const TEMP_COEFF_RAIL: f64 = 0.1;
+/// Bus and tram: frequently weak or no climate control, so a meaningful share of
+/// the outdoor temperature is felt in the cabin.
+const TEMP_COEFF_BUS_TRAM: f64 = 0.4;
+/// Any unrecognized motorized mode: a conservative mid coefficient so an unknown
+/// mode neither escapes the temperature penalty nor dominates it.
+const TEMP_COEFF_UNKNOWN: f64 = 0.3;
+
+/// Map an OTP transit leg `mode` to its temperature-exposure coefficient (ADR
+/// 0035). Air-conditioned rail/metro are near-sheltered; bus/tram are partially
+/// exposed; an unrecognized mode gets a conservative mid value. A non-transit mode
+/// never reaches this — its outdoor minutes are counted in full elsewhere.
+fn mode_temp_coeff(mode: &str) -> f64 {
+    match mode {
+        "RAIL" | "TRAIN" | "SUBWAY" | "METRO" => TEMP_COEFF_RAIL,
+        "BUS" | "TROLLEYBUS" | "COACH" | "TRAM" | "LIGHT_RAIL" => TEMP_COEFF_BUS_TRAM,
+        _ => TEMP_COEFF_UNKNOWN,
+    }
+}
+
 /// One hour's forecast for a journey's origin, parsed from the Open-Meteo
 /// response. Only the fields the factor needs are kept; everything else is
 /// ignored so a richer upstream payload never breaks parsing.
@@ -70,20 +111,30 @@ impl Forecast {
         self.apparent_temperature_c.unwrap_or(self.temperature_c)
     }
 
-    /// Map this hour's forecast to a `weather_badness` in `0.0..=1.0`, combining a
-    /// precipitation term and a temperature-extreme term. `0.0` is a calm,
-    /// comfortable hour; `1.0` is the worst this model represents. Non-finite
-    /// inputs are treated as their neutral end (no badness) so a malformed value
-    /// can never inflate the penalty.
-    pub fn badness(&self) -> f64 {
-        let rain = if self.precipitation_mm.is_finite() && self.precipitation_mm > 0.0 {
+    /// The precipitation badness component in `0.0..=1.0`: how unpleasant this
+    /// hour's rain is on its own, independent of temperature. `0.0` is dry; it
+    /// ramps to `RAIN_MAX_BADNESS` at `RAIN_SATURATION_MM` and beyond. A
+    /// non-finite or non-positive value is treated as dry so a malformed reading
+    /// can never inflate the penalty. Precipitation only hits truly-outdoor time
+    /// (ADR 0035), so this is the badness applied to the precip exposure bucket.
+    pub fn precip_badness(&self) -> f64 {
+        if self.precipitation_mm.is_finite() && self.precipitation_mm > 0.0 {
             (self.precipitation_mm / RAIN_SATURATION_MM).clamp(0.0, 1.0) * RAIN_MAX_BADNESS
         } else {
             0.0
-        };
+        }
+    }
 
+    /// The temperature-extreme badness component in `0.0..=1.0`: how unpleasant
+    /// the felt temperature is on its own, independent of rain. `0.0` inside the
+    /// comfort band; it ramps toward `TEMP_MAX_BADNESS` at the cold/heat
+    /// saturation edges. A non-finite value is treated as comfortable. Temperature
+    /// reaches in-vehicle time too (a hot bus is still hot), scaled per mode by the
+    /// climate-control coefficient (ADR 0035), so this is the badness applied to
+    /// the temperature exposure bucket.
+    pub fn temp_badness(&self) -> f64 {
         let t = self.felt_temperature_c();
-        let temp = if !t.is_finite() {
+        if !t.is_finite() {
             0.0
         } else if t < COMFORT_TEMP_MIN_C {
             // Colder than comfortable: ramp from the band edge down to saturation.
@@ -95,48 +146,92 @@ impl Forecast {
             ((t - COMFORT_TEMP_MAX_C) / span).clamp(0.0, 1.0) * TEMP_MAX_BADNESS
         } else {
             0.0
-        };
+        }
+    }
 
+    /// The combined `weather_badness` in `0.0..=1.0` for a single hour, folding the
+    /// precipitation and temperature components together: the worse of the two sets
+    /// the floor, the other nudges it, capped at 1.0. The split penalty model (ADR
+    /// 0035) applies the two components to their own exposure buckets, but this
+    /// combined scalar remains the single-hour "how bad overall" summary.
+    pub fn badness(&self) -> f64 {
+        let rain = self.precip_badness();
+        let temp = self.temp_badness();
         // Combine without double-counting past the ceiling: the worse of the two
         // sets the floor, the other nudges it, capped at 1.0.
         (rain.max(temp) + rain.min(temp) * 0.5).min(1.0)
     }
 }
 
-/// The weather penalty for one itinerary: its weather-exposed minutes times the
-/// forecast's badness. **Higher is worse.** Exposed time is the sum of walk-leg
-/// durations and outdoor wait/transfer minutes between consecutive legs (the gaps
-/// a traveler spends at a stop, in the open). Riding inside a vehicle is not
-/// exposure. With `badness == 0.0` (good weather) or zero exposed time the penalty
-/// is `0.0`, so the factor stays neutral for that itinerary. Total and panic-free:
-/// a malformed itinerary yields `0.0`.
+/// The weather penalty for one itinerary, split by weather type (ADR 0035).
+/// **Higher is worse.**
+///
+/// ```text
+/// penalty = precip_badness * precip_exposure + temp_badness * temp_exposure
+/// ```
+///
+/// where exposure is in minutes:
+///
+/// - **precip exposure** is truly-outdoor time only — walk legs plus outdoor
+///   wait/transfer gaps. In-vehicle time is sheltered from rain for *every* mode
+///   (a bus keeps the rain off), so it never enters this bucket.
+/// - **temp exposure** is the same outdoor time *plus* each transit leg's
+///   in-vehicle minutes scaled by its mode's climate-control coefficient
+///   (`mode_temp_coeff`): a hot/cold cabin still reaches the rider, more on a
+///   bus/tram than on air-conditioned rail/metro.
+///
+/// With both badness components `0.0` (good weather) or zero exposure the penalty
+/// is `0.0`, so the factor stays neutral for that itinerary. Total and
+/// panic-free: a malformed itinerary yields `0.0`.
 pub fn weather_penalty(itinerary: &Value, forecast: &Forecast) -> f64 {
-    let badness = forecast.badness();
-    if badness <= 0.0 {
+    let precip_badness = forecast.precip_badness();
+    let temp_badness = forecast.temp_badness();
+    if precip_badness <= 0.0 && temp_badness <= 0.0 {
         return 0.0;
     }
-    let exposed_minutes = exposed_seconds(itinerary) / 60.0;
-    exposed_minutes * badness
+    let exposure = exposure_seconds(itinerary);
+    let precip_minutes = exposure.precip / 60.0;
+    let temp_minutes = exposure.temp / 60.0;
+    precip_badness * precip_minutes + temp_badness * temp_minutes
 }
 
-/// The weather-exposed time of an itinerary in seconds: every walk leg's duration
-/// plus every outdoor gap between consecutive legs (a transfer/wait spent at a
-/// stop). In-vehicle transit time is sheltered and excluded. Total: a missing or
-/// malformed `legs` array, or legs without usable times, yield `0.0`.
-fn exposed_seconds(itinerary: &Value) -> f64 {
+/// An itinerary's two weather-exposure buckets, in seconds (ADR 0035).
+struct Exposure {
+    /// Truly-outdoor seconds: walk legs + outdoor wait/transfer gaps. Rain only
+    /// reaches the traveler here.
+    precip: f64,
+    /// `precip` seconds plus each transit leg's in-vehicle seconds scaled by its
+    /// mode temperature coefficient. Temperature reaches in-vehicle time too.
+    temp: f64,
+}
+
+/// Split an itinerary into its precipitation- and temperature-exposure seconds in
+/// one pass over the legs. Outdoor time (walk legs + outdoor wait/transfer gaps)
+/// counts toward both buckets; a transit leg's in-vehicle duration adds to the
+/// temperature bucket only, scaled by its mode coefficient. Total: a missing or
+/// malformed `legs` array, or legs without usable times, yield zero on both.
+fn exposure_seconds(itinerary: &Value) -> Exposure {
     let Some(legs) = itinerary.get("legs").and_then(Value::as_array) else {
-        return 0.0;
+        return Exposure {
+            precip: 0.0,
+            temp: 0.0,
+        };
     };
 
-    let mut exposed = 0.0;
+    let mut outdoor = 0.0;
+    let mut in_vehicle_temp = 0.0;
     let mut prev_end: Option<f64> = None;
 
     for leg in legs {
         let mode = leg.get("mode").and_then(Value::as_str).unwrap_or("");
 
-        // A walk leg is fully exposed.
         if mode == "WALK" {
-            exposed += leg_duration_seconds(leg);
+            // A walk leg is fully outdoor.
+            outdoor += leg_duration_seconds(leg);
+        } else if is_transit_leg(leg) {
+            // In-vehicle time is rain-sheltered for every mode, but the cabin's
+            // temperature comfort depends on the mode — scale it accordingly.
+            in_vehicle_temp += leg_duration_seconds(leg) * mode_temp_coeff(mode);
         }
 
         // The gap between the previous leg's end and this leg's start is outdoor
@@ -146,19 +241,27 @@ fn exposed_seconds(itinerary: &Value) -> f64 {
         if let (Some(end), Some(start)) = (prev_end, leg_start_millis(leg)) {
             let gap_s = (start - end) / 1000.0;
             if gap_s.is_finite() && gap_s > 0.0 {
-                exposed += gap_s;
+                outdoor += gap_s;
             }
         }
         prev_end = leg_end_millis(leg);
     }
 
-    exposed
+    Exposure {
+        precip: outdoor,
+        temp: outdoor + in_vehicle_temp,
+    }
 }
 
 /// A leg's duration in seconds (OTP reports leg duration in seconds), `0.0` when
-/// absent or malformed.
+/// absent or malformed. Guarded finite and non-negative so a garbled negative
+/// duration can never subtract from either exposure bucket — matching the
+/// finite/positive guards on the transfer-gap and badness paths.
 fn leg_duration_seconds(leg: &Value) -> f64 {
-    leg.get("duration").and_then(Value::as_f64).unwrap_or(0.0)
+    leg.get("duration")
+        .and_then(Value::as_f64)
+        .filter(|d| d.is_finite() && *d >= 0.0)
+        .unwrap_or(0.0)
 }
 
 /// A leg's `startTime` (epoch milliseconds), if present and numeric.
@@ -598,27 +701,129 @@ mod tests {
 
     #[test]
     fn walk_minutes_are_exposed() {
-        // 600s walk = 10 exposed minutes.
+        // 600s walk feeds both buckets fully — outdoor time is exposed to rain and
+        // temperature alike.
         let it = itin(vec![walk(600.0)]);
-        assert_eq!(exposed_seconds(&it), 600.0);
+        let e = exposure_seconds(&it);
+        assert_eq!(e.precip, 600.0);
+        assert_eq!(e.temp, 600.0);
     }
 
     #[test]
-    fn in_vehicle_time_is_not_exposed() {
-        // A single ride leg with no preceding leg → no walk, no gap → zero exposure.
-        let it = itin(vec![ride(1_000_000.0, 1_600_000.0)]);
-        assert_eq!(exposed_seconds(&it), 0.0);
+    fn in_vehicle_time_is_rain_sheltered_but_temperature_reaches_it() {
+        // A single bus ride with no preceding leg → no walk, no gap → zero precip
+        // exposure (the cabin keeps rain off), but the temperature bucket carries
+        // the in-vehicle minutes scaled by the bus coefficient (ADR 0035).
+        let it = itin(vec![json!({
+            "transitLeg": true, "mode": "BUS", "duration": 600.0,
+            "route": { "gtfsId": "R" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+            "startTime": 1_000_000.0, "endTime": 1_600_000.0,
+        })]);
+        let e = exposure_seconds(&it);
+        assert_eq!(e.precip, 0.0);
+        assert_eq!(e.temp, 600.0 * TEMP_COEFF_BUS_TRAM);
     }
 
     #[test]
     fn transfer_gap_between_legs_is_exposed() {
         // Ride A ends at t=1_600_000ms; ride B starts at t=1_900_000ms → a 300s
-        // outdoor wait counts as exposure even though both legs are sheltered rides.
+        // outdoor wait counts as exposure in both buckets even though both legs are
+        // sheltered rides. The rides carry no `duration`, so only the gap counts.
         let it = itin(vec![
             ride(1_000_000.0, 1_600_000.0),
             ride(1_900_000.0, 2_500_000.0),
         ]);
-        assert_eq!(exposed_seconds(&it), 300.0);
+        let e = exposure_seconds(&it);
+        assert_eq!(e.precip, 300.0);
+        // The ride legs here have no `duration` field → zero in-vehicle minutes, so
+        // the temperature bucket is just the outdoor gap.
+        assert_eq!(e.temp, 300.0);
+    }
+
+    #[test]
+    fn temperature_exposure_is_mode_aware() {
+        // Equal-duration in-vehicle legs contribute different temperature exposure:
+        // an air-conditioned metro leg contributes near-nothing while a bus leg
+        // contributes a meaningful share (ADR 0035). Rain exposure is zero for both.
+        let metro = itin(vec![json!({
+            "transitLeg": true, "mode": "SUBWAY", "duration": 1000.0,
+            "route": { "gtfsId": "M" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        let bus = itin(vec![json!({
+            "transitLeg": true, "mode": "BUS", "duration": 1000.0,
+            "route": { "gtfsId": "B" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        // A heavy-rail leg and an unknown mode flow through the same wiring, so the
+        // whole coefficient table is exercised end-to-end, not just SUBWAY/BUS.
+        let rail = itin(vec![json!({
+            "transitLeg": true, "mode": "RAIL", "duration": 1000.0,
+            "route": { "gtfsId": "R" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        let unknown = itin(vec![json!({
+            "transitLeg": true, "mode": "ZEPPELIN", "duration": 1000.0,
+            "route": { "gtfsId": "Z" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        let em = exposure_seconds(&metro);
+        let eb = exposure_seconds(&bus);
+        let er = exposure_seconds(&rail);
+        let eu = exposure_seconds(&unknown);
+        assert_eq!(em.precip, 0.0);
+        assert_eq!(eb.precip, 0.0);
+        assert_eq!(em.temp, 1000.0 * TEMP_COEFF_RAIL);
+        assert_eq!(eb.temp, 1000.0 * TEMP_COEFF_BUS_TRAM);
+        // Rail shares metro's sheltered bucket; the unknown mode sits strictly
+        // between the rail and bus exposures.
+        assert_eq!(er.temp, em.temp, "rail is as sheltered as metro");
+        assert!(em.temp < eu.temp && eu.temp < eb.temp);
+        assert!(
+            eb.temp > em.temp,
+            "a bus is more temperature-exposed than metro"
+        );
+    }
+
+    #[test]
+    fn negative_leg_duration_never_subtracts_from_exposure() {
+        // A garbled negative duration must be ignored, not subtracted: a walk leg
+        // with a negative duration contributes zero outdoor time, and a transit leg
+        // with a negative duration contributes zero in-vehicle temperature (ADR 0035
+        // hardening — OTP never emits these, but the buckets stay non-negative).
+        let bad_walk = itin(vec![json!({
+            "transitLeg": false, "mode": "WALK", "duration": -100.0,
+        })]);
+        let ew = exposure_seconds(&bad_walk);
+        assert_eq!(ew.precip, 0.0);
+        assert_eq!(ew.temp, 0.0);
+
+        let bad_ride = itin(vec![json!({
+            "transitLeg": true, "mode": "BUS", "duration": -600.0,
+            "route": { "gtfsId": "R" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        let er = exposure_seconds(&bad_ride);
+        assert_eq!(er.precip, 0.0);
+        assert_eq!(er.temp, 0.0);
+    }
+
+    #[test]
+    fn mode_temp_coeff_orders_modes_sensibly() {
+        // Air-conditioned rail/metro are near-sheltered; bus/tram are partially
+        // exposed; an unknown mode lands at a conservative mid value. The exact
+        // numbers are a heuristic; the ordering is the contract (ADR 0035).
+        assert!(mode_temp_coeff("SUBWAY") < mode_temp_coeff("BUS"));
+        assert!(mode_temp_coeff("RAIL") < mode_temp_coeff("TRAM"));
+        // These equalities deliberately pin the bucket grouping (rail with metro,
+        // bus with tram) so splitting a bucket would trip the test.
+        assert_eq!(mode_temp_coeff("SUBWAY"), mode_temp_coeff("RAIL"));
+        assert_eq!(mode_temp_coeff("BUS"), mode_temp_coeff("TRAM"));
+        // An unknown mode sits between the sheltered and the exposed bands.
+        let unknown = mode_temp_coeff("ZEPPELIN");
+        assert!(mode_temp_coeff("SUBWAY") <= unknown);
+        assert!(unknown <= mode_temp_coeff("BUS"));
     }
 
     #[test]
@@ -635,7 +840,10 @@ mod tests {
 
     #[test]
     fn good_weather_is_a_neutral_zero_penalty() {
-        // Even a long walk costs nothing when the weather is calm.
+        // Even a long walk costs nothing when the weather is calm. Because the split
+        // penalty short-circuits to 0.0 whenever precip_badness and temp_badness are
+        // both 0, mild/dry composites stay byte-identical to the pre-0035 behavior —
+        // the type split changes nothing in good weather.
         let lots = itin(vec![walk(3600.0)]);
         assert_eq!(weather_penalty(&lots, &calm()), 0.0);
     }
@@ -656,6 +864,98 @@ mod tests {
         // Legs present but garbled entries.
         let garbled = json!({ "legs": [7, { "mode": 3 }] });
         assert_eq!(weather_penalty(&garbled, &rainy()), 0.0);
+    }
+
+    // --- split badness + type-aware penalty (ADR 0035) -----------------------
+
+    /// A dry but hot hour: temperature extreme with no rain, so only the temp
+    /// component (and thus in-vehicle exposure) bites.
+    fn hot() -> Forecast {
+        Forecast {
+            temperature_c: 40.0,
+            precipitation_mm: 0.0,
+            apparent_temperature_c: Some(40.0),
+        }
+    }
+
+    #[test]
+    fn badness_splits_into_precipitation_and_temperature_components() {
+        // A pouring, comfortable-temperature hour: all precip badness, no temp.
+        let wet = Forecast {
+            temperature_c: 18.0,
+            precipitation_mm: 8.0,
+            apparent_temperature_c: Some(18.0),
+        };
+        assert!(wet.precip_badness() > 0.0);
+        assert_eq!(wet.temp_badness(), 0.0);
+
+        // A dry, scorching hour: all temp badness, no precip.
+        assert_eq!(hot().precip_badness(), 0.0);
+        assert!(hot().temp_badness() > 0.0);
+
+        // The combined badness still folds both, so the calm case is neutral.
+        assert_eq!(calm().precip_badness(), 0.0);
+        assert_eq!(calm().temp_badness(), 0.0);
+        assert_eq!(calm().badness(), 0.0);
+    }
+
+    #[test]
+    fn rain_penalizes_outdoor_time_not_in_vehicle_time() {
+        // In the rain, a long bus ride (sheltered) must out-score an equal-duration
+        // walk: precipitation only reaches the outdoor walk, so the ride's penalty
+        // is zero while the walk's is positive (ADR 0035).
+        let walk_it = itin(vec![walk(1200.0)]);
+        let ride_it = itin(vec![json!({
+            "transitLeg": true, "mode": "BUS", "duration": 1200.0,
+            "route": { "gtfsId": "R" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        // Heavy rain, comfortable temperature → temp badness is zero, so the ride's
+        // in-vehicle temperature exposure contributes nothing either.
+        let pouring = Forecast {
+            temperature_c: 18.0,
+            precipitation_mm: 8.0,
+            apparent_temperature_c: Some(18.0),
+        };
+        let p_walk = weather_penalty(&walk_it, &pouring);
+        let p_ride = weather_penalty(&ride_it, &pouring);
+        assert!(p_walk > 0.0);
+        assert_eq!(p_ride, 0.0, "a sheltered ride takes no rain penalty");
+    }
+
+    #[test]
+    fn heat_penalizes_a_bus_more_than_an_equal_metro_ride() {
+        // In a heatwave, an equal-duration bus ride is more temperature-exposed than
+        // a metro ride because the bus coefficient is higher (ADR 0035). Neither has
+        // outdoor time, so the whole penalty is the mode-scaled in-vehicle exposure.
+        let bus = itin(vec![json!({
+            "transitLeg": true, "mode": "BUS", "duration": 1800.0,
+            "route": { "gtfsId": "B" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        let metro = itin(vec![json!({
+            "transitLeg": true, "mode": "SUBWAY", "duration": 1800.0,
+            "route": { "gtfsId": "M" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        let p_bus = weather_penalty(&bus, &hot());
+        let p_metro = weather_penalty(&metro, &hot());
+        assert!(p_bus > p_metro, "the bus cabin is hotter than the metro");
+        assert!(p_metro > 0.0, "even an A/C metro is not fully sheltered");
+    }
+
+    #[test]
+    fn heat_leaves_a_pure_ride_below_an_equal_walk() {
+        // Sanity that the temperature bucket still ranks an outdoor walk above any
+        // in-vehicle ride: the walk feels the full extreme (coeff 1.0) while a ride
+        // feels only a fraction.
+        let walk_it = itin(vec![walk(1800.0)]);
+        let bus = itin(vec![json!({
+            "transitLeg": true, "mode": "BUS", "duration": 1800.0,
+            "route": { "gtfsId": "B" }, "trip": { "directionId": 0 },
+            "from": { "stop": { "gtfsId": "s" } },
+        })]);
+        assert!(weather_penalty(&walk_it, &hot()) > weather_penalty(&bus, &hot()));
     }
 
     // --- coarse coordinates --------------------------------------------------
