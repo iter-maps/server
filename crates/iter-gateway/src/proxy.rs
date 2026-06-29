@@ -19,6 +19,7 @@ use crate::annotate::{DelayLookup, TypicalDelay, annotate_plan};
 use crate::http::ApiResult;
 use crate::rerank::{Profile, rerank_plan};
 use crate::state::AppState;
+use crate::weather::{Forecast, plan_date, plan_hour, plan_origin};
 
 /// Upper bound on the OTP plan body we will buffer to rerank (16 MiB), mirroring
 /// the Tier-2 read cap. A plan past this is streamed through unchanged rather than
@@ -124,6 +125,18 @@ async fn postprocess_routing(
     // Buffer the upstream body. A read error here is a genuine upstream failure.
     let bytes = resp.bytes().await.map_err(|e| upstream_error(&e, "otp"))?;
 
+    // Resolve the journey forecast for the weather rerank factor (ADR 0033) before
+    // the blocking transform, since the fetch is async. Only the rerank path needs
+    // it; it is `None` when weather is disabled, the plan has no usable origin, or
+    // the fetch fails — in every case the factor stays neutral and the rerank still
+    // completes. The fetch is short-timeout and fail-soft, so it never stalls or
+    // fails the routing response.
+    let forecast = if profile.is_some() {
+        weather_forecast(state, &bytes).await
+    } else {
+        None
+    };
+
     // Transform on a blocking worker (a Tier-2 map fetch plus a JSON re-parse). The
     // closure owns the buffered bytes and returns either the rewritten body or the
     // original verbatim — an OTP error envelope or non-JSON body declines every
@@ -133,7 +146,8 @@ async fn postprocess_routing(
     // cache lock is released inside `map()`, so it is never held across an await.
     let cache = state.reliability.clone();
     let body = tokio::task::spawn_blocking(move || {
-        try_postprocess(&cache.map(), &bytes, profile, predict).unwrap_or_else(|| bytes.to_vec())
+        try_postprocess(&cache.map(), &bytes, profile, predict, forecast)
+            .unwrap_or_else(|| bytes.to_vec())
     })
     .await
     .map_err(|_| ApiError::internal("routing post-process worker panicked"))?;
@@ -147,6 +161,24 @@ async fn postprocess_routing(
         .map_err(|_| ApiError::internal("failed to build post-processed response").into())
 }
 
+/// Resolve the journey's origin forecast for the weather rerank factor (ADR 0033),
+/// or `None` when weather is disabled, the body has no parseable plan/origin, or
+/// the fetch fails. Fail-soft and short-timeout at every step: a `None` result
+/// leaves the weather factor neutral and the rerank still completes. The journey's
+/// origin is coarsened to ~1 km before it leaves for the third party (privacy
+/// posture, ADR 0033). The fetch is cached per coarse `(lat, lon, hour)`.
+async fn weather_forecast(state: &AppState, bytes: &[u8]) -> Option<Forecast> {
+    let client = state.weather_client.as_ref()?;
+    let plan: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let (lat, lon) = plan_origin(&plan)?;
+    let hour = plan_hour(&plan);
+    let date = plan_date(&plan);
+    state
+        .weather_cache
+        .get_or_fetch(client, lat, lon, hour, date.as_deref())
+        .await
+}
+
 /// Parse `bytes` as an OTP plan and apply the requested transforms in order:
 /// rerank the itineraries (when a profile is set) and annotate RT-less transit
 /// legs with their historical typical delay (when `predict`). Returns the
@@ -154,12 +186,15 @@ async fn postprocess_routing(
 /// touched it (in which case the caller returns the original bytes). Each enabled
 /// transform derives its index from the same already-parsed Tier-2 map (served by
 /// the gateway's mtime-validated cache, ADR 0032 — same archive as the read
-/// endpoint, ADR 0024). This runs on a blocking worker.
+/// endpoint, ADR 0024). `forecast` carries the journey weather for the rerank's
+/// weather factor (ADR 0033), or `None` to leave that factor neutral. This runs on
+/// a blocking worker.
 fn try_postprocess(
     map: &std::collections::BTreeMap<String, Tier2>,
     bytes: &[u8],
     profile: Option<Profile>,
     predict: bool,
+    forecast: Option<Forecast>,
 ) -> Option<Vec<u8>> {
     let mut plan: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     let mut touched = false;
@@ -175,7 +210,7 @@ fn try_postprocess(
         };
         // A non-plan body makes `rerank_plan` return false; we leave `touched` so
         // the response passes through verbatim unless another transform fires.
-        touched |= rerank_plan(&mut plan, &lookup, profile);
+        touched |= rerank_plan(&mut plan, &lookup, profile, forecast.as_ref());
     }
 
     if predict {

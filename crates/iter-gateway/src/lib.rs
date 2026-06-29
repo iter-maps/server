@@ -24,3 +24,4 @@ pub mod sprite;
 pub mod state;
 pub mod styles;
 pub mod tiles;
+pub mod weather;

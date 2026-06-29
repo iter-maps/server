@@ -18,6 +18,10 @@
 //! 3. **walking effort** — total walk-leg duration; less preferred.
 //! 4. **eco/carbon** — per-mode gCO2e/passenger-km intensity × leg distance,
 //!    summed; lower preferred.
+//! 5. **weather** — the journey's weather-exposed minutes (walking + outdoor
+//!    waiting) times a forecast badness; less preferred (ADR 0033). Neutral
+//!    (no effect) when no forecast is available — disabled, or the fetch failed —
+//!    so existing profile behaviour is unchanged unless weather is configured.
 //!
 //! Each raw factor is normalized **across the itineraries in this one response**
 //! (min-max, see `normalize_benefit`) into a benefit in `0.0..=1.0` where higher
@@ -41,6 +45,7 @@
 use serde_json::Value;
 
 use crate::legkey::{is_transit_leg, leg_key};
+use crate::weather::{Forecast, weather_penalty};
 
 /// Resolves a transit leg's `(route_id, direction_id, stop_id)` reliability key
 /// to an on-time rate in `0.0..=1.0`, or `None` when there is no history. The
@@ -60,11 +65,11 @@ const NEUTRAL_RELIABILITY: f64 = 0.5;
 /// (ADR 0028).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
-    /// Reliability only — the wave-1 contract (ADR 0026). Equivalent to weights
-    /// `(reliability=1, transfers=0, walk=0, eco=0)`, so it reorders exactly as
-    /// before and only the reliability factor matters.
+    /// Reliability only — the wave-1 contract (ADR 0026). All other factor weights
+    /// are `0`, so it reorders exactly as before and only the reliability factor
+    /// matters.
     Reliability,
-    /// The full composite, balancing all four factors (ADR 0028).
+    /// The full composite, balancing every factor (ADR 0028, 0033).
     Balanced,
     /// Leans on the carbon factor: lowest-emission itineraries first.
     Eco,
@@ -81,6 +86,7 @@ struct Weights {
     transfers: f64,
     walk: f64,
     eco: f64,
+    weather: f64,
 }
 
 impl Profile {
@@ -101,20 +107,25 @@ impl Profile {
     /// not the absolute scale, decide the ordering (ADR 0028).
     fn weights(self) -> Weights {
         match self {
-            // Wave-1 contract: reliability is the only factor with weight.
+            // Wave-1 contract: reliability is the only factor with weight. Weather
+            // stays out so this profile reorders exactly as before (ADR 0026).
             Self::Reliability => Weights {
                 reliability: 1.0,
                 transfers: 0.0,
                 walk: 0.0,
                 eco: 0.0,
+                weather: 0.0,
             },
             // An even-handed blend. Reliability leads; walking gets a gentle
-            // weight per the wave-1b brief.
+            // weight per the wave-1b brief. Weather joins as a gentle factor — it
+            // only bites when a forecast is available *and* the journey is exposed
+            // (ADR 0033); with no forecast it is neutral and changes nothing.
             Self::Balanced => Weights {
                 reliability: 1.0,
                 transfers: 0.6,
                 walk: 0.4,
                 eco: 0.6,
+                weather: 0.5,
             },
             // Carbon dominates; the rest only break near-ties.
             Self::Eco => Weights {
@@ -122,13 +133,16 @@ impl Profile {
                 transfers: 0.3,
                 walk: 0.2,
                 eco: 1.5,
+                weather: 0.2,
             },
-            // Fewer transfers and less walking dominate.
+            // Fewer transfers and less walking dominate; weather exposure weighs
+            // heavily here since comfort is what the profile optimizes for.
             Self::Comfort => Weights {
                 reliability: 0.5,
                 transfers: 1.2,
                 walk: 1.0,
                 eco: 0.2,
+                weather: 1.0,
             },
         }
     }
@@ -190,7 +204,17 @@ fn mode_co2_intensity(mode: &str) -> f64 {
 /// The reorder is **stable**: equal composite scores preserve OTP's original
 /// ordering, so the default engine ranking still breaks ties. A single-itinerary
 /// plan, or itineraries that tie on every factor, keep their original order.
-pub fn rerank_plan(plan: &mut Value, lookup: &ReliabilityLookup<'_>, profile: Profile) -> bool {
+///
+/// `forecast` is the journey-origin weather for the weather factor (ADR 0033), or
+/// `None` when weather is disabled or its fetch failed — in which case every
+/// itinerary's weather penalty is `0.0` and the factor is neutral, leaving the
+/// other factors' ordering untouched.
+pub fn rerank_plan(
+    plan: &mut Value,
+    lookup: &ReliabilityLookup<'_>,
+    profile: Profile,
+    forecast: Option<&Forecast>,
+) -> bool {
     let Some(itineraries) = plan
         .get_mut("data")
         .and_then(|d| d.get_mut("plan"))
@@ -201,10 +225,12 @@ pub fn rerank_plan(plan: &mut Value, lookup: &ReliabilityLookup<'_>, profile: Pr
     };
 
     // Pull the raw per-itinerary factor values out first, since min-max
-    // normalization needs the whole set before any single score is final.
+    // normalization needs the whole set before any single score is final. The
+    // weather penalty is `0.0` for every itinerary when there is no forecast, so a
+    // disabled/failed weather fetch leaves the factor neutral (zero span).
     let raw: Vec<Factors> = itineraries
         .iter()
-        .map(|it| factors_of(it, lookup))
+        .map(|it| factors_of(it, lookup, forecast))
         .collect();
 
     // Normalize each factor across the response into a benefit (higher better).
@@ -213,6 +239,10 @@ pub fn rerank_plan(plan: &mut Value, lookup: &ReliabilityLookup<'_>, profile: Pr
     let transfers_b = normalize_benefit(raw.iter().map(|f| f.transfers), Direction::LowerBetter);
     let walk_b = normalize_benefit(raw.iter().map(|f| f.walk_seconds), Direction::LowerBetter);
     let eco_b = normalize_benefit(raw.iter().map(|f| f.co2_grams), Direction::LowerBetter);
+    let weather_b = normalize_benefit(
+        raw.iter().map(|f| f.weather_penalty),
+        Direction::LowerBetter,
+    );
 
     let w = profile.weights();
 
@@ -226,7 +256,8 @@ pub fn rerank_plan(plan: &mut Value, lookup: &ReliabilityLookup<'_>, profile: Pr
             let composite = w.reliability * reliability_b[i]
                 + w.transfers * transfers_b[i]
                 + w.walk * walk_b[i]
-                + w.eco * eco_b[i];
+                + w.eco * eco_b[i]
+                + w.weather * weather_b[i];
             if let Some(obj) = it.as_object_mut() {
                 // Keep the wave-1 additive field (the raw reliability factor),
                 // and add the composite. Both are additive and optional.
@@ -267,16 +298,28 @@ struct Factors {
     walk_seconds: f64,
     /// Total estimated gCO2e across legs (lower is better).
     co2_grams: f64,
+    /// Weather-exposed minutes × forecast badness (lower is better). `0.0` when
+    /// there is no forecast, so the factor is neutral (ADR 0033).
+    weather_penalty: f64,
 }
 
-/// Compute every soft factor for one itinerary in a single pass over its legs.
-fn factors_of(itinerary: &Value, lookup: &ReliabilityLookup<'_>) -> Factors {
+/// Compute every soft factor for one itinerary. The leg-derived factors come from
+/// a single pass over the legs; the weather penalty is a pure function of the
+/// itinerary and the journey forecast (`0.0` when no forecast is available).
+fn factors_of(
+    itinerary: &Value,
+    lookup: &ReliabilityLookup<'_>,
+    forecast: Option<&Forecast>,
+) -> Factors {
+    let weather = forecast.map_or(0.0, |f| weather_penalty(itinerary, f));
+
     let Some(legs) = itinerary.get("legs").and_then(Value::as_array) else {
         return Factors {
             reliability: NEUTRAL_RELIABILITY,
             transfers: 0.0,
             walk_seconds: 0.0,
             co2_grams: 0.0,
+            weather_penalty: weather,
         };
     };
 
@@ -321,6 +364,7 @@ fn factors_of(itinerary: &Value, lookup: &ReliabilityLookup<'_>) -> Factors {
         transfers: f64::from(transfers),
         walk_seconds,
         co2_grams,
+        weather_penalty: weather,
     }
 }
 
@@ -458,7 +502,7 @@ mod tests {
             "C" => Some(0.70),
             _ => None,
         };
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability, None));
         assert_eq!(route_order(&plan), vec!["B", "C", "A"]);
     }
 
@@ -469,7 +513,12 @@ mod tests {
             json!({ "legs": [transit_leg("A", 0, "s1")] }),
             json!({ "legs": [transit_leg("B", 0, "s2")] }),
         ]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Reliability));
+        assert!(rerank_plan(
+            &mut plan,
+            &no_history,
+            Profile::Reliability,
+            None
+        ));
         assert_eq!(route_order(&plan), vec!["A", "B"]);
         // The additive reliability factor reads back as neutral.
         assert_eq!(
@@ -486,7 +535,7 @@ mod tests {
             json!({ "legs": [transit_leg("C", 0, "s")] }),
         ]);
         let lookup = |_r: &str, _d: i32, _s: &str| Some(0.80);
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability, None));
         assert_eq!(route_order(&plan), vec!["A", "B", "C"]);
     }
 
@@ -494,7 +543,7 @@ mod tests {
     fn reliability_profile_attaches_additive_scores() {
         let mut plan = plan_with(vec![json!({ "legs": [transit_leg("A", 0, "s")] })]);
         let lookup = |_r: &str, _d: i32, _s: &str| Some(0.75);
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability, None));
         let it = &plan["data"]["plan"]["itineraries"][0];
         assert_eq!(it["reliabilityScore"], json!(0.75));
         // The composite is present and equals the expected weighted sum: with one
@@ -520,7 +569,7 @@ mod tests {
             "LO" => Some(0.30),
             _ => None,
         };
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability, None));
         let its = plan["data"]["plan"]["itineraries"].as_array().unwrap();
         assert_eq!(its[0]["legs"][0]["route"]["gtfsId"], "HI");
         assert_eq!(its[0]["rerankScore"], json!(1.0));
@@ -538,7 +587,7 @@ mod tests {
             1 => Some(0.20),
             _ => None,
         };
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability, None));
         let dirs: Vec<i64> = plan["data"]["plan"]["itineraries"]
             .as_array()
             .unwrap()
@@ -559,7 +608,7 @@ mod tests {
             ("SLOW", "70001") => Some(0.10),
             _ => None,
         };
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability, None));
         assert_eq!(route_order(&plan), vec!["ATAC:FAST", "ATAC:SLOW"]);
     }
 
@@ -580,7 +629,7 @@ mod tests {
             transit_leg_dist("T3", 0, "s", 400.0),
         ]});
         let mut plan = plan_with(vec![three, one]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Comfort));
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Comfort, None));
         // The one-board itinerary (route ONE) sorts to the front.
         assert_eq!(route_order(&plan), vec!["ONE", "T1"]);
     }
@@ -597,7 +646,7 @@ mod tests {
             transit_leg("C", 0, "s"),
             walk_leg(),
         ]});
-        let f = factors_of(&it, &no_history);
+        let f = factors_of(&it, &no_history, None);
         assert_eq!(f.transfers, 3.0);
         assert_eq!(f.walk_seconds, 300.0);
     }
@@ -615,7 +664,7 @@ mod tests {
             transit_leg("HIGH", 0, "s"),
         ]});
         let mut plan = plan_with(vec![lots_walk, little_walk]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Comfort));
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Comfort, None));
         // The light-walk itinerary's first leg is the walk leg; assert via the
         // transit leg id at index 1.
         let routes: Vec<String> = plan["data"]["plan"]["itineraries"]
@@ -647,7 +696,7 @@ mod tests {
             "from": { "stop": { "gtfsId": "s" } },
         })]});
         let mut plan = plan_with(vec![bus, metro]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Eco));
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Eco, None));
         assert_eq!(route_order(&plan), vec!["METRO", "BUSLINE"]);
     }
 
@@ -657,7 +706,7 @@ mod tests {
         let walk_only = json!({ "legs": [walk_leg()] });
         let bus = json!({ "legs": [transit_leg("BUSLINE", 0, "s")] });
         let mut plan = plan_with(vec![bus, walk_only]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Eco));
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Eco, None));
         // The walk-only itinerary has no route at leg 0; check it landed first by
         // confirming the bus itinerary is now last.
         let last = &plan["data"]["plan"]["itineraries"][1];
@@ -688,11 +737,11 @@ mod tests {
         };
 
         let mut p_rel = plan_with(vec![green.clone(), fast.clone()]);
-        assert!(rerank_plan(&mut p_rel, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut p_rel, &lookup, Profile::Reliability, None));
         assert_eq!(route_order(&p_rel), vec!["FAST", "GREEN"]);
 
         let mut p_eco = plan_with(vec![fast, green]);
-        assert!(rerank_plan(&mut p_eco, &lookup, Profile::Eco));
+        assert!(rerank_plan(&mut p_eco, &lookup, Profile::Eco, None));
         assert_eq!(route_order(&p_eco), vec!["GREEN", "FAST"]);
     }
 
@@ -700,7 +749,7 @@ mod tests {
     fn single_itinerary_is_never_reordered_and_factors_are_neutral() {
         // One itinerary → every factor's spread is zero → benefit 0.5 → no change.
         let mut plan = plan_with(vec![json!({ "legs": [transit_leg("ONLY", 0, "s")] })]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced));
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced, None));
         assert_eq!(route_order(&plan), vec!["ONLY"]);
     }
 
@@ -713,8 +762,178 @@ mod tests {
             json!({ "legs": [transit_leg("B", 0, "s")] }),
             json!({ "legs": [transit_leg("C", 0, "s")] }),
         ]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced));
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced, None));
         assert_eq!(route_order(&plan), vec!["A", "B", "C"]);
+    }
+
+    // --- weather factor (ADR 0033) ------------------------------------------
+
+    /// A foul-weather forecast: heavy rain, so any exposed minutes are penalized.
+    fn foul() -> Forecast {
+        Forecast {
+            temperature_c: 8.0,
+            precipitation_mm: 8.0,
+            apparent_temperature_c: Some(7.0),
+        }
+    }
+
+    /// A calm forecast: comfortable and dry, so exposure costs nothing.
+    fn fair() -> Forecast {
+        Forecast {
+            temperature_c: 20.0,
+            precipitation_mm: 0.0,
+            apparent_temperature_c: Some(20.0),
+        }
+    }
+
+    /// An itinerary that walks `secs` seconds plus one sheltered transit leg, so
+    /// the two siblings differ only in exposed (walk) time.
+    fn walk_then_ride(route: &str, walk_secs: f64) -> Value {
+        json!({ "legs": [
+            json!({ "transitLeg": false, "mode": "WALK", "duration": walk_secs }),
+            transit_leg(route, 0, "s"),
+        ]})
+    }
+
+    #[test]
+    fn weather_factor_ranks_more_exposure_lower_in_bad_weather() {
+        // Two siblings: SHELTERED walks 60s, EXPOSED walks 1800s. Everything else
+        // ties (same mode/distance, no history). Under the Comfort profile with a
+        // foul forecast the weather factor penalizes the long exposed walk, so the
+        // sheltered itinerary leads.
+        let mut plan = plan_with(vec![
+            walk_then_ride("EXPOSED", 1800.0),
+            walk_then_ride("SHELTERED", 60.0),
+        ]);
+        assert!(rerank_plan(
+            &mut plan,
+            &no_history,
+            Profile::Comfort,
+            Some(&foul())
+        ));
+        // Read the transit-leg id at index 1 (index 0 is the walk leg).
+        let routes: Vec<String> = plan["data"]["plan"]["itineraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|it| {
+                it["legs"][1]["route"]["gtfsId"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(routes, vec!["SHELTERED", "EXPOSED"]);
+    }
+
+    #[test]
+    fn weather_factor_is_neutral_in_good_weather() {
+        // The same two siblings, but a fair forecast → zero penalty for both → the
+        // weather factor cannot reorder; the stable sort holds OTP's order. (Walk
+        // still differs, but Comfort's walk weight is the same either way; isolate
+        // weather by using a profile-free check: with a fair forecast the order is
+        // identical to the no-forecast order.)
+        let build = || {
+            plan_with(vec![
+                walk_then_ride("FIRST", 60.0),
+                walk_then_ride("SECOND", 60.0), // equal walk → only weather could differ
+            ])
+        };
+        let mut with_fair = build();
+        let mut without = build();
+        assert!(rerank_plan(
+            &mut with_fair,
+            &no_history,
+            Profile::Comfort,
+            Some(&fair())
+        ));
+        assert!(rerank_plan(
+            &mut without,
+            &no_history,
+            Profile::Comfort,
+            None
+        ));
+        let order = |p: &Value| {
+            p["data"]["plan"]["itineraries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|it| {
+                    it["legs"][1]["route"]["gtfsId"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&with_fair), vec!["FIRST", "SECOND"]);
+        assert_eq!(order(&with_fair), order(&without));
+    }
+
+    #[test]
+    fn weather_factor_is_neutral_without_a_forecast() {
+        // No forecast at all → every weather penalty is zero → the factor adds
+        // nothing, so the order matches what the other factors alone would produce.
+        let mut plan = plan_with(vec![
+            walk_then_ride("EXPOSED", 1800.0),
+            walk_then_ride("SHELTERED", 60.0),
+        ]);
+        // Reliability profile has zero weather weight anyway, but pass None to pin
+        // the disabled contract: it must not panic and must complete.
+        assert!(rerank_plan(
+            &mut plan,
+            &no_history,
+            Profile::Reliability,
+            None
+        ));
+        // Reliability-only with no history → all tie → stable order preserved.
+        let routes: Vec<String> = plan["data"]["plan"]["itineraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|it| {
+                it["legs"][1]["route"]["gtfsId"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(routes, vec!["EXPOSED", "SHELTERED"]);
+    }
+
+    #[test]
+    fn reliability_profile_ignores_weather_even_when_supplied() {
+        // The wave-1 contract: even with a foul forecast, the Reliability profile's
+        // zero weather weight means weather never reorders. With history, only
+        // reliability decides.
+        let mut plan = plan_with(vec![
+            walk_then_ride("LOWREL", 1800.0), // long exposed walk but...
+            walk_then_ride("HIGHREL", 60.0),
+        ]);
+        let lookup = |route: &str, _d: i32, _s: &str| match route {
+            "HIGHREL" => Some(0.95),
+            "LOWREL" => Some(0.20),
+            _ => None,
+        };
+        assert!(rerank_plan(
+            &mut plan,
+            &lookup,
+            Profile::Reliability,
+            Some(&foul())
+        ));
+        let routes: Vec<String> = plan["data"]["plan"]["itineraries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|it| {
+                it["legs"][1]["route"]["gtfsId"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        // HIGHREL leads on reliability alone; weather is ignored under this profile.
+        assert_eq!(routes, vec!["HIGHREL", "LOWREL"]);
     }
 
     #[test]
@@ -723,14 +942,18 @@ mod tests {
         // way from a pure-eco ordering, proving the weighted sum (not one dominant
         // factor) decides. With two itineraries each factor is 0/1, so we can hand
         // compute the composites under Balanced weights (rel=1.0, tr=0.6, walk=0.4,
-        // eco=0.6):
+        // eco=0.6, weather=0.5). With no forecast (None) the weather penalty is 0.0
+        // for both → equal → benefit 0.5 each → a flat +0.5*0.5 = 0.25 on every
+        // composite that does not change the order:
         //
         //   DIRECT: one BUS leg (higher carbon), 1 boarding, reliability 0.95.
-        //     rel benefit 1, transfers benefit 1, eco benefit 0, walk tie 0.5
-        //     → 1.0*1 + 0.6*1 + 0.4*0.5 + 0.6*0 = 1.80
+        //     rel benefit 1, transfers benefit 1, eco benefit 0, walk tie 0.5,
+        //     weather tie 0.5
+        //     → 1.0*1 + 0.6*1 + 0.4*0.5 + 0.6*0 + 0.5*0.5 = 2.05
         //   GREEN: two SUBWAY legs (low carbon), 2 boardings, reliability 0.20.
-        //     rel benefit 0, transfers benefit 0, eco benefit 1, walk tie 0.5
-        //     → 1.0*0 + 0.6*0 + 0.4*0.5 + 0.6*1 = 0.80
+        //     rel benefit 0, transfers benefit 0, eco benefit 1, walk tie 0.5,
+        //     weather tie 0.5
+        //     → 1.0*0 + 0.6*0 + 0.4*0.5 + 0.6*1 + 0.5*0.5 = 1.05
         //
         // Balanced ranks DIRECT first; a pure-eco order would rank GREEN first. So
         // asserting DIRECT leads can only hold if the blend, not eco alone, decides.
@@ -752,13 +975,13 @@ mod tests {
             _ => None,
         };
         let mut plan = plan_with(vec![green, direct]);
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Balanced));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Balanced, None));
         // The blend lifts DIRECT above the lower-carbon GREEN; eco alone would not.
         assert_eq!(route_order(&plan), vec!["DIRECT", "G1"]);
         // Pin the composites the blend produced, confirming the weighted-sum wiring.
         let its = plan["data"]["plan"]["itineraries"].as_array().unwrap();
-        assert_eq!(its[0]["rerankScore"], json!(1.8));
-        assert_eq!(its[1]["rerankScore"], json!(0.8));
+        assert_eq!(its[0]["rerankScore"], json!(2.05));
+        assert_eq!(its[1]["rerankScore"], json!(1.05));
     }
 
     #[test]
@@ -830,7 +1053,8 @@ mod tests {
         assert!(!rerank_plan(
             &mut not_a_plan,
             &no_history,
-            Profile::Balanced
+            Profile::Balanced,
+            None
         ));
         assert_eq!(not_a_plan, before);
 
@@ -839,19 +1063,25 @@ mod tests {
         assert!(!rerank_plan(
             &mut wrong_shape,
             &no_history,
-            Profile::Balanced
+            Profile::Balanced,
+            None
         ));
         assert_eq!(wrong_shape, before2);
 
         let mut bare = json!(42);
-        assert!(!rerank_plan(&mut bare, &no_history, Profile::Balanced));
+        assert!(!rerank_plan(
+            &mut bare,
+            &no_history,
+            Profile::Balanced,
+            None
+        ));
         assert_eq!(bare, json!(42));
     }
 
     #[test]
     fn empty_itineraries_is_a_no_op_success() {
         let mut plan = plan_with(vec![]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced));
+        assert!(rerank_plan(&mut plan, &no_history, Profile::Balanced, None));
         assert_eq!(
             plan["data"]["plan"]["itineraries"]
                 .as_array()
@@ -876,7 +1106,7 @@ mod tests {
             Profile::Comfort,
         ] {
             let mut p = plan.clone();
-            assert!(rerank_plan(&mut p, &no_history, profile));
+            assert!(rerank_plan(&mut p, &no_history, profile, None));
             assert_eq!(
                 p["data"]["plan"]["itineraries"].as_array().unwrap().len(),
                 3
@@ -894,7 +1124,12 @@ mod tests {
             json!({ "legs": [no_stop] }),
             json!({ "legs": [transit_leg("OTHER", 0, "s")] }),
         ]);
-        assert!(rerank_plan(&mut plan, &no_history, Profile::Reliability));
+        assert!(rerank_plan(
+            &mut plan,
+            &no_history,
+            Profile::Reliability,
+            None
+        ));
         assert_eq!(
             plan["data"]["plan"]["itineraries"][0]["reliabilityScore"],
             json!(0.5)
@@ -913,9 +1148,9 @@ mod tests {
             "B" => Some(0.80),
             _ => None,
         };
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability, None));
         let order1 = route_order(&plan);
-        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability));
+        assert!(rerank_plan(&mut plan, &lookup, Profile::Reliability, None));
         assert_eq!(route_order(&plan), order1, "order is a fixed point");
     }
 }

@@ -43,6 +43,8 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
         offline_source: data_dir.join("output/tiles/rome.pmtiles"),
         places_path: data_dir.join("output/places.jsonl"),
         pmtiles_bin: "iter-pmtiles-absent".to_string(),
+        // Weather default-off unless a test opts in via a stub base URL.
+        weather_api_url: None,
         data_dir,
     }
 }
@@ -1262,4 +1264,273 @@ async fn routing_rerank_and_predict_compose_on_one_buffer() {
     // a historical annotation from the seeded history.
     assert_eq!(its[0]["legs"][0]["predictedDelay"]["source"], "historical");
     assert_eq!(its[1]["legs"][0]["predictedDelay"]["source"], "historical");
+}
+
+// --- opt-in weather rerank factor (ADR 0033) --------------------------------
+
+use std::sync::{Arc, Mutex};
+
+/// A canned Open-Meteo forecast body: hour 0 is calm and dry, so a fair-weather
+/// run is neutral; the stub serves this for any request.
+const FAIR_FORECAST: &str = r#"{"latitude":41.9,"longitude":12.5,"hourly":{
+  "time":["2026-06-29T00:00"],
+  "temperature_2m":[20.0],
+  "precipitation":[0.0],
+  "apparent_temperature":[20.0]
+}}"#;
+
+/// A canned Open-Meteo forecast body: hour 0 is cold and pouring, so exposed
+/// minutes are penalized — a foul-weather run reorders by exposure.
+const FOUL_FORECAST: &str = r#"{"latitude":41.9,"longitude":12.5,"hourly":{
+  "time":["2026-06-29T00:00"],
+  "temperature_2m":[6.0],
+  "precipitation":[9.0],
+  "apparent_temperature":[4.0]
+}}"#;
+
+/// A two-itinerary plan sharing an origin (so both get the same forecast) and
+/// constructed so EVERY non-weather factor ties exactly — both have one 120 s walk
+/// leg and one 3000 m bus leg (equal walk duration, equal boardings, equal carbon,
+/// no reliability history). The only difference is the **outdoor transfer gap**
+/// between the two legs: DRYWALK boards immediately after the walk; WETWALK waits
+/// 1800 s in the open before its bus. So only the weather factor can reorder them,
+/// isolating it from walk/transfers/eco. `from.lat/lon` on the first leg gives the
+/// origin; the walk's `startTime` pins hour 0. WETWALK is listed FIRST so that with
+/// the weather factor neutral the stable sort keeps it first — a foul forecast is
+/// what demotes it below DRYWALK, making the reorder observable.
+const WEATHER_PLAN: &str = r#"{"data":{"plan":{"itineraries":[
+  {"duration":600,"legs":[
+    {"transitLeg":false,"mode":"WALK","duration":120.0,"startTime":0.0,"endTime":120000.0,"from":{"lat":41.90278,"lon":12.49636}},
+    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":1920000.0,"endTime":2700000.0,"route":{"gtfsId":"WETWALK"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s2"}}}
+  ]},
+  {"duration":600,"legs":[
+    {"transitLeg":false,"mode":"WALK","duration":120.0,"startTime":0.0,"endTime":120000.0,"from":{"lat":41.90278,"lon":12.49636}},
+    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":120000.0,"endTime":900000.0,"route":{"gtfsId":"DRYWALK"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s1"}}}
+  ]}
+]}}}"#;
+
+/// Stand up a weather stub that answers every `GET` with `(status, body)` and
+/// records the last request URI (so a test can assert the sent coordinates were
+/// rounded coarse). Returns its base URL plus the shared recorder. The base URL
+/// has no path — the client appends its own query string.
+async fn weather_stub(
+    status: StatusCode,
+    body: &'static str,
+) -> (
+    String,
+    Arc<Mutex<Option<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use axum::extract::RawQuery;
+    use axum::routing::get;
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let recorder = seen.clone();
+    let app = Router::new().route(
+        "/",
+        get(move |RawQuery(q): RawQuery| {
+            let recorder = recorder.clone();
+            async move {
+                *recorder.lock().unwrap() = q;
+                (status, body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/"), seen, handle)
+}
+
+/// A populated gateway whose `otp_url` points at `otp_base` and whose
+/// `weather_api_url` points at `weather_base` (enabling the weather factor).
+fn gateway_with_otp_and_weather(otp_base: String, weather_base: String, root: PathBuf) -> Router {
+    let mut cfg = config_for(root);
+    cfg.otp_url = otp_base;
+    cfg.weather_api_url = Some(weather_base);
+    router::build(AppState::new(cfg).unwrap())
+}
+
+/// Read back first-leg-or-transit-leg route ids: the weather plan's first leg is a
+/// walk, so the distinguishing route id is on the second leg.
+fn weather_routes(body: &[u8]) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).unwrap();
+    v["data"]["plan"]["itineraries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|it| {
+            it["legs"][1]["route"]["gtfsId"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_ranks_exposed_itinerary_lower_in_bad_weather() {
+    // End-to-end: a foul forecast served by the stub makes the long-exposed-walk
+    // itinerary rank below the sheltered one under the comfort profile, proving the
+    // weather factor flows from the real client through the composite (ADR 0033).
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let (weather, _seen, _hw) = weather_stub(StatusCode::OK, FOUL_FORECAST).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    // DRYWALK (little exposure) now leads WETWALK (lots of exposure in the rain).
+    assert_eq!(weather_routes(&body), vec!["DRYWALK", "WETWALK"]);
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_is_neutral_in_good_weather() {
+    // A fair forecast → zero weather penalty for both → the weather factor cannot
+    // reorder; with every other factor tied the stable sort holds OTP's order.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let (weather, _seen, _hw) = weather_stub(StatusCode::OK, FAIR_FORECAST).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(weather_routes(&body), vec!["WETWALK", "DRYWALK"]);
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_sends_coarse_rounded_coordinates() {
+    // The journey origin (41.90278, 12.49636) must leave for the third party
+    // rounded to two decimals (41.9, 12.5) — the privacy posture (ADR 0033).
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let (weather, seen, _hw) = weather_stub(StatusCode::OK, FAIR_FORECAST).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, _) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    let q = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("weather stub was called");
+    assert!(q.contains("latitude=41.9"), "coords not rounded: {q}");
+    assert!(q.contains("longitude=12.5"), "coords not rounded: {q}");
+    // The raw precise coordinates must never appear.
+    assert!(!q.contains("41.90278"), "leaked precise lat: {q}");
+    assert!(!q.contains("12.49636"), "leaked precise lon: {q}");
+}
+
+/// A one-itinerary plan whose first leg starts on a future day (2027-01-15T08:00Z,
+/// epoch ms 1_800_000_000_000) so the forecast must be pinned to *that* day, not
+/// today. Used to prove the request carries the journey's own date (ADR 0033).
+const FUTURE_DAY_PLAN: &str = r#"{"data":{"plan":{"itineraries":[
+  {"duration":600,"legs":[
+    {"transitLeg":false,"mode":"WALK","duration":120.0,"startTime":1800000000000.0,"endTime":1800000120000.0,"from":{"lat":41.90278,"lon":12.49636}},
+    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":1800001920000.0,"endTime":1800002700000.0,"route":{"gtfsId":"FUTUREBUS"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s2"}}}
+  ]}
+]}}}"#;
+
+#[tokio::test]
+async fn routing_rerank_weather_pins_the_journey_day_in_the_request() {
+    // A departure on a later day must fetch that day's forecast: the request pins
+    // start_date/end_date to the journey's UTC day and timezone=UTC, so the
+    // hour-of-day indexes the journey's own row, not always day-0 (ADR 0033).
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, FUTURE_DAY_PLAN, "application/json").await;
+    let (weather, seen, _hw) = weather_stub(StatusCode::OK, FAIR_FORECAST).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, _) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    let q = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("weather stub was called");
+    assert!(q.contains("start_date=2027-01-15"), "day not pinned: {q}");
+    assert!(q.contains("end_date=2027-01-15"), "day not pinned: {q}");
+    assert!(q.contains("timezone=UTC"), "tz not pinned: {q}");
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_disabled_makes_no_call_and_is_neutral() {
+    // No WEATHER_API_URL → the weather factor is default-off: no outbound call, and
+    // the rerank completes using the other factors only. Here every other factor
+    // ties, so the order is OTP's original.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    // gateway_with_otp leaves weather_api_url None (the default config).
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(weather_routes(&body), vec!["WETWALK", "DRYWALK"]);
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_upstream_500_is_fail_soft_neutral() {
+    // A 500 from the weather upstream must not fail or stall the rerank: the factor
+    // degrades to neutral and the response is intact and reordered by the rest.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let (weather, _seen, _hw) =
+        weather_stub(StatusCode::INTERNAL_SERVER_ERROR, r#"{"error":true}"#).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    // Response intact; with the weather factor neutral the order is OTP's original.
+    assert_eq!(weather_routes(&body), vec!["WETWALK", "DRYWALK"]);
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_unparsable_body_is_fail_soft_neutral() {
+    // A 200 with a body that isn't Open-Meteo JSON → parse fails → neutral factor,
+    // rerank still succeeds, response intact.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let (weather, _seen, _hw) = weather_stub(StatusCode::OK, "{ not json at all").await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(weather_routes(&body), vec!["WETWALK", "DRYWALK"]);
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_dead_upstream_is_fail_soft_neutral() {
+    // A dead weather upstream (connection refused, then the short client timeout)
+    // must never block routing: the factor goes neutral and the response is intact.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    // Point weather at a dead loopback port.
+    let app = gateway_with_otp_and_weather(
+        otp,
+        "http://127.0.0.1:1/".to_string(),
+        dir.path().to_path_buf(),
+    );
+
+    let (status, _, body) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(weather_routes(&body), vec!["WETWALK", "DRYWALK"]);
+}
+
+#[tokio::test]
+async fn routing_default_path_makes_no_weather_call_even_when_enabled() {
+    // The default (no rerank flag) path stays a byte-for-byte passthrough and must
+    // never touch the weather upstream, even with WEATHER_API_URL set.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let (weather, seen, _hw) = weather_stub(StatusCode::OK, FOUL_FORECAST).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_plain()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, WEATHER_PLAN.as_bytes());
+    assert!(
+        seen.lock().unwrap().is_none(),
+        "default path must not call the weather upstream"
+    );
 }

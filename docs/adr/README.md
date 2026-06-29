@@ -76,3 +76,5 @@ a typo) do not need one.
 - [0030](0030-no-rt-historical-delay-annotation.md) — No-live-RT historical delay annotation in the gateway
 - [0031](0031-concourse-corridor-union.md) — Concourse corridor union (footprint dissolve)
 - [0032](0032-gateway-tier2-read-cache.md) — Gateway Tier-2 reliability read cache, mtime-validated
+- [0033](0033-weather-aware-rerank-factor.md) — Server-side Open-Meteo weather factor for the composite reranker
+- [0034](0034-weather-fetch-bounded-and-day-pinned.md) — Weather fetch: bounded response and journey-day pinning

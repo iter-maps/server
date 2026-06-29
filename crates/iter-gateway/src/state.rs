@@ -9,6 +9,7 @@ use crate::cache::TtlCache;
 use crate::config::GatewayConfig;
 use crate::correlate::CorrelationIndex;
 use crate::reliability_cache::Tier2Cache;
+use crate::weather::{WeatherCache, WeatherClient};
 
 /// Shared, cheaply-cloneable handle for axum handlers. The gateway is
 /// stateless across requests (the caches below are derived, disposable upstream
@@ -36,6 +37,13 @@ pub struct AppState {
     /// read endpoint, the reranker, and the no-RT annotator (ADR 0032). Derived,
     /// disposable soft-state — rebuilt from `tier2.json` on restart.
     pub reliability: Arc<Tier2Cache>,
+    /// Open-Meteo client for the opt-in weather rerank factor (ADR 0033), or
+    /// `None` when `WEATHER_API_URL` is unset — the default-off posture, in which
+    /// case the factor is always neutral and no outbound call is ever made.
+    pub weather_client: Option<WeatherClient>,
+    /// Bounded TTL memo of forecasts keyed by coarse `(lat, lon, hour)`. Derived,
+    /// disposable soft-state holding only coarse public weather (ADR 0033).
+    pub weather_cache: Arc<WeatherCache>,
 }
 
 impl AppState {
@@ -63,6 +71,12 @@ impl AppState {
             cfg.trenitalia_region,
         );
         let reliability = Arc::new(Tier2Cache::new(cfg.reliability_dir.clone()));
+        // The weather client is built only when a base URL is configured; absent
+        // it, weather stays default-off (ADR 0033). It reuses the pooled `http`.
+        let weather_client = cfg
+            .weather_api_url
+            .clone()
+            .map(|url| WeatherClient::new(http.clone(), url));
         Ok(Self {
             cfg: Arc::new(cfg),
             http,
@@ -73,6 +87,8 @@ impl AppState {
             correlations,
             live_trains,
             reliability,
+            weather_client,
+            weather_cache: Arc::new(WeatherCache::new()),
         })
     }
 }

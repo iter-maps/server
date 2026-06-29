@@ -53,6 +53,10 @@ pub struct GatewayConfig {
     pub offline_source: PathBuf,
     /// `go-pmtiles` binary used for the range-extract.
     pub pmtiles_bin: String,
+    /// Open-Meteo forecast base URL for the opt-in weather rerank factor (ADR
+    /// 0033). `None` (unset/empty `WEATHER_API_URL`) disables weather entirely:
+    /// no outbound call, and the factor stays neutral — the default-off posture.
+    pub weather_api_url: Option<String>,
 }
 
 /// Abuse-protection caps — the only protection on the public, auth-less
@@ -130,6 +134,8 @@ impl GatewayConfig {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| tiles_dir.join(&tiles_basename)),
             pmtiles_bin: config::or("OFFLINE_PMTILES_BIN", "pmtiles"),
+            // Default-off: unset/empty disables the weather factor entirely.
+            weather_api_url: config::opt("WEATHER_API_URL"),
             overlay_kinds,
             region_country,
             default_lang,
