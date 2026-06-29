@@ -557,3 +557,288 @@ async fn reliability_oversized_store_is_fail_soft_empty() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["cells"].as_array().unwrap().len(), 0);
 }
+
+// --- opt-in itinerary reranking (ADR 0026) ----------------------------------
+
+/// Stand up a throwaway OTP stub on a loopback port that answers every request
+/// with `(status, body)`, and return its base URL. The gateway's outbound
+/// reqwest hits this real socket; the inbound side is still driven via `oneshot`.
+async fn otp_stub(status: StatusCode, body: &'static str) -> (String, tokio::task::JoinHandle<()>) {
+    use axum::routing::post;
+    let app = Router::new().route("/otp/gtfs/v1", post(move || async move { (status, body) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// Like [`otp_stub`] but sets an explicit `Content-Type` on the response, so a
+/// test can prove the handler's body handling is content-type-agnostic.
+async fn otp_stub_ct(
+    status: StatusCode,
+    body: &'static str,
+    ct: &'static str,
+) -> (String, tokio::task::JoinHandle<()>) {
+    use axum::routing::post;
+    let app = Router::new().route(
+        "/otp/gtfs/v1",
+        post(move || async move { ([(header::CONTENT_TYPE, ct)], (status, body)) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// A populated gateway whose `otp_url` points at `otp_base` and whose reliability
+/// dir holds `tier2` (already seeded under `<root>/reliability/`).
+fn gateway_with_otp(otp_base: String, root: PathBuf) -> Router {
+    let mut cfg = config_for(root);
+    cfg.otp_url = otp_base;
+    router::build(AppState::new(cfg).unwrap())
+}
+
+/// POST a routing query to the gateway, optionally with the rerank flag.
+fn routing_req(rerank: bool) -> Request<Body> {
+    let uri = if rerank {
+        "/otp/gtfs/v1?rerank=reliability"
+    } else {
+        "/otp/gtfs/v1"
+    };
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"query":"{plan{itineraries{legs{mode}}}}"}"#))
+        .unwrap()
+}
+
+/// A two-itinerary OTP plan: itinerary 0 rides route SLOW, itinerary 1 rides
+/// route FAST, both boarding stop 70001 in direction 0.
+const TWO_ITIN_PLAN: &str = r#"{"data":{"plan":{"itineraries":[
+  {"duration":600,"legs":[{"transitLeg":true,"route":{"gtfsId":"SLOW"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"70001"}}}]},
+  {"duration":700,"legs":[{"transitLeg":true,"route":{"gtfsId":"FAST"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"70001"}}}]}
+]}}}"#;
+
+/// Seed reliability so FAST is reliable (on-time) and SLOW is not, both at stop
+/// 70001 / direction 0.
+fn seed_rerank_reliability(root: &Path) {
+    let mut on_time = Tier2::default();
+    for _ in 0..10 {
+        on_time.observe(0); // all on-time → rate 1.0
+    }
+    let mut late = Tier2::default();
+    for _ in 0..10 {
+        late.observe(900); // all late → rate 0.0
+    }
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(
+        tier2_key("FAST", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+        on_time,
+    );
+    map.insert(
+        tier2_key("SLOW", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+        late,
+    );
+    write(
+        &root.join("reliability").join(TIER2_FILE),
+        &serde_json::to_vec(&map).unwrap(),
+    );
+}
+
+/// A two-itinerary plan where itinerary 0 (MID) rides two transit legs and
+/// itinerary 1 (SINGLE) rides one, all in direction 0. Lets a test exercise the
+/// count-weighted multi-leg mean through the real handler.
+const MULTILEG_PLAN: &str = r#"{"data":{"plan":{"itineraries":[
+  {"duration":600,"legs":[
+    {"transitLeg":true,"route":{"gtfsId":"MID_A"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"S1"}}},
+    {"transitLeg":true,"route":{"gtfsId":"MID_B"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"S2"}}}
+  ]},
+  {"duration":700,"legs":[{"transitLeg":true,"route":{"gtfsId":"SINGLE"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"S3"}}}]}
+]}}}"#;
+
+/// Seed reliability for [`MULTILEG_PLAN`]: MID_A on-time 1.0 and MID_B 0.6 (equal
+/// observation counts → mean 0.80), SINGLE 0.30. So MID's mean beats SINGLE.
+fn seed_multileg_reliability(root: &Path) {
+    // 10 obs each so the per-leg rates are exact and counts are equal.
+    let leg = |on_time: usize| {
+        let mut t = Tier2::default();
+        for i in 0..10 {
+            t.observe(if i < on_time { 0 } else { 900 });
+        }
+        t
+    };
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(
+        tier2_key("MID_A", 0, "S1", TodBucket::AmPeak, DayType::Weekday),
+        leg(10), // 1.0
+    );
+    map.insert(
+        tier2_key("MID_B", 0, "S2", TodBucket::AmPeak, DayType::Weekday),
+        leg(6), // 0.6
+    );
+    map.insert(
+        tier2_key("SINGLE", 0, "S3", TodBucket::AmPeak, DayType::Weekday),
+        leg(3), // 0.3
+    );
+    write(
+        &root.join("reliability").join(TIER2_FILE),
+        &serde_json::to_vec(&map).unwrap(),
+    );
+}
+
+/// Read back the order of first-leg route ids from a plan body.
+fn itinerary_routes(body: &[u8]) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).unwrap();
+    v["data"]["plan"]["itineraries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|it| {
+            it["legs"][0]["route"]["gtfsId"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn routing_default_is_byte_for_byte_passthrough() {
+    // Without the flag the handler must not parse or reorder — the body comes
+    // back exactly as the upstream sent it, even though reliability data exists.
+    let (otp, _h) = otp_stub(StatusCode::OK, TWO_ITIN_PLAN).await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_rerank_reliability(dir.path());
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, ct, body) = send(&app, routing_req(false)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("text/plain; charset=utf-8"));
+    // Original order preserved AND no additive field injected.
+    assert_eq!(body, TWO_ITIN_PLAN.as_bytes());
+    assert_eq!(itinerary_routes(&body), vec!["SLOW", "FAST"]);
+}
+
+#[tokio::test]
+async fn routing_rerank_orders_reliable_itinerary_first() {
+    let (otp, _h) = otp_stub(StatusCode::OK, TWO_ITIN_PLAN).await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_rerank_reliability(dir.path());
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(status, StatusCode::OK);
+    // FAST (on-time 1.0) now leads SLOW (0.0).
+    assert_eq!(itinerary_routes(&body), vec!["FAST", "SLOW"]);
+    // The additive score is present and ordered.
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let its = v["data"]["plan"]["itineraries"].as_array().unwrap();
+    assert_eq!(its[0]["reliabilityScore"], serde_json::json!(1.0));
+    assert_eq!(its[1]["reliabilityScore"], serde_json::json!(0.0));
+    // Schema preserved: legs/duration untouched.
+    assert_eq!(its[0]["duration"], 700);
+    assert_eq!(its[0]["legs"][0]["route"]["gtfsId"], "FAST");
+}
+
+#[tokio::test]
+async fn routing_rerank_with_no_reliability_data_keeps_original_order() {
+    // The flag is set but the store is empty → every itinerary scores neutral and
+    // the stable sort preserves OTP's original order.
+    let (otp, _h) = otp_stub(StatusCode::OK, TWO_ITIN_PLAN).await;
+    let dir = tempfile::tempdir().unwrap(); // no reliability/ written
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(itinerary_routes(&body), vec!["SLOW", "FAST"]);
+}
+
+#[tokio::test]
+async fn routing_rerank_non_plan_body_passes_through_untouched() {
+    // An OTP GraphQL error envelope on the opt-in path is not a plan → returned
+    // verbatim, never a 500.
+    let err_body = r#"{"errors":[{"message":"no path found"}]}"#;
+    let (otp, _h) = otp_stub(StatusCode::OK, err_body).await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_rerank_reliability(dir.path());
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, err_body.as_bytes());
+}
+
+#[tokio::test]
+async fn routing_rerank_malformed_json_passes_through_untouched() {
+    let (otp, _h) = otp_stub(StatusCode::OK, "{ not json at all").await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"{ not json at all");
+}
+
+#[tokio::test]
+async fn routing_rerank_preserves_upstream_error_status() {
+    // A non-200 from OTP on the opt-in path is relayed with its status and body,
+    // never reranked.
+    let (otp, _h) = otp_stub(StatusCode::BAD_REQUEST, r#"{"errors":[]}"#).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, br#"{"errors":[]}"#);
+}
+
+#[tokio::test]
+async fn routing_rerank_dead_upstream_is_still_502() {
+    // The opt-in path inherits the same transport fail-soft as the passthrough.
+    let (_d, app) = populated();
+    let (status, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"]["code"], "UPSTREAM_UNAVAILABLE");
+}
+
+#[tokio::test]
+async fn routing_default_passthrough_ignores_json_content_type() {
+    // The default branch never inspects the body, regardless of content-type: a
+    // 200 application/json plan still streams untouched, no reliabilityScore added.
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, TWO_ITIN_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_rerank_reliability(dir.path());
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, ct, body) = send(&app, routing_req(false)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("application/json"));
+    assert_eq!(body, TWO_ITIN_PLAN.as_bytes());
+    assert!(!String::from_utf8_lossy(&body).contains("reliabilityScore"));
+}
+
+#[tokio::test]
+async fn routing_rerank_multi_leg_mean_drives_end_to_end_order() {
+    // End-to-end: itinerary TWOLEG has two transit legs (one high, one low) whose
+    // count-weighted mean must beat a single-leg sibling, proving the real Tier-2
+    // index feeds the multi-leg mean through the handler, not just the unit core.
+    let (otp, _h) = otp_stub_ct(StatusCode::OK, MULTILEG_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_multileg_reliability(dir.path());
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req(true)).await;
+    assert_eq!(status, StatusCode::OK);
+    // MID's two legs mean 0.80; SINGLE is 0.30 → MID leads.
+    assert_eq!(itinerary_routes(&body), vec!["MID_A", "SINGLE"]);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let its = v["data"]["plan"]["itineraries"].as_array().unwrap();
+    assert_eq!(its[0]["reliabilityScore"], serde_json::json!(0.8));
+    assert_eq!(its[1]["reliabilityScore"], serde_json::json!(0.3));
+}

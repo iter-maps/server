@@ -161,6 +161,91 @@ pub fn read_tier2_cells(
     cells
 }
 
+/// A count-weighted on-time rate per `(route, direction, stop)`, reduced over
+/// every (tod_bucket, day_type) cell of that stop — the whole Tier-2 archive in
+/// one pass. Built for the reranker, which needs a cheap in-memory lookup keyed
+/// by leg rather than a per-leg file read. Fail-soft and bounded: a missing or
+/// corrupt store yields an empty map. Cells with no on-time rate (count 0) don't
+/// contribute; a key with no contributing observation is omitted entirely, so a
+/// lookup miss is the natural "no history" signal. The map keys carry the raw
+/// (un-sanitized) route and stop tokens recovered from the store, so a leg keys
+/// against it with the same `gtfsId` the writer recorded.
+pub fn read_tier2_on_time_index(
+    root: &Path,
+) -> std::collections::HashMap<(String, i32, String), f64> {
+    use std::collections::HashMap;
+    // Accumulate (weighted sum, total count) per key, then divide.
+    let mut acc: HashMap<(String, i32, String), (f64, u64)> = HashMap::new();
+    for (key, agg) in read_tier2_map(root) {
+        let Some((route, direction, stop)) = split_stop_key(&key) else {
+            continue;
+        };
+        let readout = Readout::of(&agg);
+        let (Some(rate), count) = (readout.on_time_rate, readout.count) else {
+            continue;
+        };
+        if count == 0 {
+            continue;
+        }
+        let entry = acc.entry((route, direction, stop)).or_insert((0.0, 0));
+        entry.0 += rate * count as f64;
+        entry.1 += count;
+    }
+    acc.into_iter()
+        .filter(|(_, (_, total))| *total > 0)
+        .map(|(k, (weighted, total))| (k, weighted / total as f64))
+        .collect()
+}
+
+/// Recover the `(route, direction, stop)` triple from a full Tier-2 key
+/// `route/dir/stop/bucket/daytype`, reversing [`sanitize_token`] on the route and
+/// stop fields. `None` when the key isn't the exact five-field leaf shape or a
+/// field can't be parsed/desanitized.
+fn split_stop_key(key: &str) -> Option<(String, i32, String)> {
+    let mut parts = key.split('/');
+    let (Some(route_tok), Some(dir_tok), Some(stop_tok), Some(_bucket), Some(_day), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return None;
+    };
+    let direction: i32 = dir_tok.parse().ok()?;
+    Some((
+        desanitize_token(route_tok)?,
+        direction,
+        desanitize_token(stop_tok)?,
+    ))
+}
+
+/// Inverse of [`sanitize_token`]: decode the injective `+HH` byte escapes back to
+/// the original token. `None` on a malformed escape (so a corrupt key is skipped
+/// rather than yielding garbage). The lone non-injective input is the empty
+/// token, which sanitizes to `_` — we decode `_` to a literal `_` (the realistic
+/// case) rather than the empty string, since no feed id is empty.
+fn desanitize_token(tok: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(tok.len());
+    let mut chars = tok.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'+' {
+            let hi = chars.next()?;
+            let lo = chars.next()?;
+            let hex = |c: u8| match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'A'..=b'F' => Some(c - b'A' + 10),
+                _ => None,
+            };
+            bytes.push(hex(hi)? << 4 | hex(lo)?);
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +461,53 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn desanitize_round_trips_real_and_escaped_tokens() {
+        for raw in ["MEA", "70001", "ATAC:MEA", "a/b", "x.y", "with space"] {
+            assert_eq!(desanitize_token(&sanitize_token(raw)).as_deref(), Some(raw));
+        }
+        // A malformed escape is rejected rather than yielding garbage.
+        assert_eq!(desanitize_token("+ZZ"), None);
+        assert_eq!(desanitize_token("+9"), None);
+    }
+
+    #[test]
+    fn on_time_index_weights_cells_by_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut map = BTreeMap::new();
+        // Stop A, two slices: am-peak all on-time (rate 1.0, 3 obs), pm-peak all
+        // late (rate 0.0, 1 obs) → count-weighted rate = 3/4 = 0.75.
+        let mut am = Tier2::default();
+        for _ in 0..3 {
+            am.observe(0);
+        }
+        let mut pm = Tier2::default();
+        pm.observe(600);
+        map.insert(
+            tier2_key("ATAC:MEA", 0, "70001", TodBucket::AmPeak, DayType::Weekday),
+            am,
+        );
+        map.insert(
+            tier2_key("ATAC:MEA", 0, "70001", TodBucket::PmPeak, DayType::Weekday),
+            pm,
+        );
+        seed(tmp.path(), &map);
+
+        let index = read_tier2_on_time_index(tmp.path());
+        let rate = index
+            .get(&("ATAC:MEA".to_string(), 0, "70001".to_string()))
+            .copied()
+            .expect("keyed by the raw gtfsId tokens");
+        assert!((rate - 0.75).abs() < 1e-9, "weighted rate was {rate}");
+    }
+
+    #[test]
+    fn on_time_index_is_empty_for_missing_or_corrupt_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(read_tier2_on_time_index(tmp.path()).is_empty());
+        std::fs::write(tmp.path().join(TIER2_FILE), b"{ not json").unwrap();
+        assert!(read_tier2_on_time_index(tmp.path()).is_empty());
     }
 }

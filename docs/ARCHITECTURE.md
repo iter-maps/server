@@ -65,8 +65,10 @@ scale horizontally with no coordination. Surfaces:
   per-artifact freshness document, plus the orchestration probes (`/livez`,
   `/readyz`).
 - **Routing / geocoding** — reverse-proxied to OTP / Photon; the BFF already
-  hosts place enrichment/correlation (below) and is where future itinerary
-  re-ranking will sit.
+  hosts place enrichment/correlation (below). Soft itinerary re-ranking now
+  starts here: the opt-in `POST /otp/gtfs/v1?rerank=reliability` path buffers the
+  plan and stably reorders its itineraries by a reliability score, default-off and
+  fail-soft so the passthrough never regresses (ADR 0026).
 - **Places** — `GET /places/enrich` fuses open sources (Wikipedia summary,
   Wikidata, Wikimedia Commons) into the normalized `Place` DTO with per-field
   provenance; `GET /places/image` proxies a Commons image through the BFF; `GET
