@@ -58,8 +58,15 @@ flagged per item.
   20,617 stop_times, zero loss). Auto-downloads from the Italian NAP (CCISS)
   public endpoint each run. The `UicOperatingPeriod`/`ValidDayBits` are now
   expanded via `DayTypeAssignment` into exact `calendar_dates` (calendar_dates-
-  only). **Remaining:** `shapes.txt` stitching from OSM rail.
-  Design: concept doc 11 — gateway-and-external-providers · Decision: ADR 0016.
+  only). `shapes.txt` is now stitched **best-effort** from OSM rail: a pure
+  stitcher chains each `route=train` relation's member rail ways into one ordered
+  polyline per branch (greedy endpoint joining with flips, longest-run-wins on a
+  gap, per-branch split), wired through an `osmpbf` clip reader and matched to
+  routes by `ref`. Fail-soft — no clip (the default) emits the feed exactly as
+  before. **Remaining:** none core; a fuller per-pattern multi-segment shape is
+  possible if OTP ever needs it.
+  Design: concept doc 11 — gateway-and-external-providers, doc 25/26 — rail
+  geometry · Decision: ADR 0016.
 
 ## 2. Remaining Rust capabilities
 

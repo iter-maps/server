@@ -14,6 +14,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::job::Job;
 use crate::netex;
+use crate::shapes::{self, RelInfo};
 
 pub struct FlGtfsBuild {
     pub netex_path: PathBuf,
@@ -22,6 +23,10 @@ pub struct FlGtfsBuild {
     /// NeTEx profile id selecting the country driver (ADR 0017); the FL feed is
     /// the Italian NeTEx-IT default (`it-iti4`).
     pub netex_profile: String,
+    /// Optional OSM clip to stitch `route=train` rail geometry into `shapes.txt`
+    /// (extends ADR 0016). Absent/unreadable → GTFS is emitted without shapes,
+    /// exactly as before (`OSM_CLIP_PATH`, default `<graph>/<region>.osm.pbf`).
+    pub osm_clip_path: Option<PathBuf>,
     pub http: reqwest::Client,
 }
 
@@ -57,15 +62,20 @@ impl Job for FlGtfsBuild {
         let netex_path = self.netex_path.clone();
         let out = self.out_path.clone();
         let profile_id = self.netex_profile.clone();
-        let stats =
-            tokio::task::spawn_blocking(move || convert_file(&netex_path, &out, &profile_id))
-                .await??;
+        // Only stitch shapes when a clip is configured and present; otherwise the
+        // build proceeds unchanged (shapes are a best-effort enrichment).
+        let clip = self.osm_clip_path.clone().filter(|p| p.is_file());
+        let stats = tokio::task::spawn_blocking(move || {
+            convert_file(&netex_path, &out, &profile_id, clip.as_deref())
+        })
+        .await??;
         tracing::info!(
             stops = stats.stops,
             routes = stats.routes,
             trips = stats.trips,
             stop_times = stats.stop_times,
             services = stats.services,
+            shapes = stats.shapes,
             out = %self.out_path.display(),
             "fl-gtfs: built GTFS from NeTEx"
         );
@@ -110,9 +120,16 @@ async fn download(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::R
     Ok(())
 }
 
-/// Decompress (if `.gz`), parse the NeTEx, and write the GTFS zip atomically.
-/// The profile id selects the country driver for id stripping and the agency.
-fn convert_file(netex: &Path, out: &Path, profile_id: &str) -> anyhow::Result<netex::Stats> {
+/// Decompress (if `.gz`), parse the NeTEx, optionally stitch OSM-rail shapes, and
+/// write the GTFS zip atomically. The profile id selects the country driver for
+/// id stripping and the agency; `clip` (when present) is the OSM clip to stitch
+/// `route=train` geometry from.
+fn convert_file(
+    netex: &Path,
+    out: &Path,
+    profile_id: &str,
+    clip: Option<&Path>,
+) -> anyhow::Result<netex::Stats> {
     let profile = iter_region_drivers::netex_profile(profile_id);
     let file = std::fs::File::open(netex)?;
     let reader: Box<dyn BufRead> = if netex.extension().and_then(|e| e.to_str()) == Some("gz") {
@@ -122,15 +139,56 @@ fn convert_file(netex: &Path, out: &Path, profile_id: &str) -> anyhow::Result<ne
     };
     let nx = netex::parse(reader, profile.as_ref())?;
 
+    // Map an OSM line `ref` (e.g. "FL1") to the GTFS route id of the route whose
+    // short name matches it, so a stitched relation's shape lands on the right
+    // line. No clip → no shapes → GTFS unchanged.
+    let stitched = clip.map(|c| stitch_shapes(c, &nx)).unwrap_or_default();
+
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut tmp = out.to_path_buf().into_os_string();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    let stats = netex::write_gtfs_zip(&nx, profile.as_ref(), std::fs::File::create(&tmp)?)?;
+    let stats = netex::write_gtfs_zip(
+        &nx,
+        profile.as_ref(),
+        &stitched,
+        std::fs::File::create(&tmp)?,
+    )?;
     std::fs::rename(&tmp, out)?;
     Ok(stats)
+}
+
+/// Stitch the clip's `route=train` relations, labelling each shape with the GTFS
+/// route id whose short name equals the relation's OSM `ref` (so trips on that
+/// route point at the shape). Relations without a matching route are skipped.
+fn stitch_shapes(clip: &Path, nx: &netex::Netex) -> Vec<shapes::Shape> {
+    let by_short = short_to_route_id(nx);
+    shapes::read_rail_shapes(clip, |rel: &RelInfo| route_for_rel(&by_short, rel))
+}
+
+/// Map each line's non-empty short name to its GTFS route id. Lines with an empty
+/// short name are excluded so they can never match a relation.
+fn short_to_route_id(nx: &netex::Netex) -> std::collections::HashMap<&str, &str> {
+    nx.lines
+        .iter()
+        .filter(|(_, l)| !l.short.is_empty())
+        .map(|(id, l)| (l.short.as_str(), id.as_str()))
+        .collect()
+}
+
+/// Resolve a relation to a GTFS route id: match on the OSM `ref` (e.g. "FL1"),
+/// falling back to the relation `name` for relations that carry the line only in
+/// their name. `None` (no matching route) skips the relation.
+fn route_for_rel(
+    by_short: &std::collections::HashMap<&str, &str>,
+    rel: &RelInfo,
+) -> Option<String> {
+    by_short
+        .get(rel.route_ref.as_str())
+        .or_else(|| by_short.get(rel.name.as_str()))
+        .map(|id| id.to_string())
 }
 
 #[cfg(test)]
@@ -144,6 +202,7 @@ mod tests {
             out_path,
             netex_url: None,
             netex_profile: DEFAULT_NETEX_PROFILE.to_string(),
+            osm_clip_path: None,
             http: reqwest::Client::new(),
         }
     }
@@ -174,6 +233,92 @@ mod tests {
         assert!(zip.by_name("stop_times.txt").is_ok());
         assert!(zip.by_name("calendar_dates.txt").is_ok());
         assert!(zip.by_name("calendar.txt").is_err());
+    }
+
+    #[test]
+    fn route_for_rel_matches_ref_then_name_and_filters_empty_short() {
+        // Two lines: "FL1" with a short name, plus one with an empty short name
+        // that must never match. RelInfo carries the OSM ref and name tags.
+        let mut nx = netex::Netex::default();
+        nx.lines.insert(
+            "route-fl1".to_string(),
+            netex::Line {
+                short: "FL1".to_string(),
+                long: "Roma - Orte".to_string(),
+                route_type: 2,
+            },
+        );
+        nx.lines.insert(
+            "route-blank".to_string(),
+            netex::Line {
+                short: String::new(),
+                long: "Unnamed".to_string(),
+                route_type: 2,
+            },
+        );
+        let by_short = short_to_route_id(&nx);
+
+        // ref match wins.
+        let by_ref = RelInfo {
+            route_ref: "FL1".to_string(),
+            name: "irrelevant".to_string(),
+        };
+        assert_eq!(
+            route_for_rel(&by_short, &by_ref).as_deref(),
+            Some("route-fl1")
+        );
+
+        // empty ref → fall back to the name.
+        let by_name = RelInfo {
+            route_ref: String::new(),
+            name: "FL1".to_string(),
+        };
+        assert_eq!(
+            route_for_rel(&by_short, &by_name).as_deref(),
+            Some("route-fl1")
+        );
+
+        // Neither ref nor name matches a route → relation skipped.
+        let unknown = RelInfo {
+            route_ref: "FL9".to_string(),
+            name: "nope".to_string(),
+        };
+        assert_eq!(route_for_rel(&by_short, &unknown), None);
+
+        // A line with an empty short name is never the match target.
+        let empty = RelInfo {
+            route_ref: String::new(),
+            name: String::new(),
+        };
+        assert_eq!(route_for_rel(&by_short, &empty), None);
+    }
+
+    #[test]
+    fn convert_file_without_a_clip_emits_the_legacy_feed() {
+        // The fail-soft default at the conversion boundary: clip=None and a clip
+        // pointing at a nonexistent file both produce the pre-shapes feed (no
+        // shapes.txt, 4-column trips.txt header).
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("fl.netex.xml");
+        std::fs::write(&src, SAMPLE).unwrap();
+
+        for clip in [None, Some(Path::new("/no/such.pbf"))] {
+            let out = dir.path().join("out.gtfs.zip");
+            convert_file(&src, &out, DEFAULT_NETEX_PROFILE, clip).unwrap();
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+            assert!(
+                zip.by_name("shapes.txt").is_err(),
+                "no shapes.txt: {clip:?}"
+            );
+            let mut trips = String::new();
+            std::io::Read::read_to_string(&mut zip.by_name("trips.txt").unwrap(), &mut trips)
+                .unwrap();
+            assert_eq!(
+                trips.lines().next().unwrap(),
+                "route_id,service_id,trip_id,trip_headsign",
+                "legacy header: {clip:?}"
+            );
+        }
     }
 
     #[test]

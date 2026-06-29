@@ -1003,6 +1003,7 @@ dependencies = [
  "iter-region",
  "iter-region-drivers",
  "jiff",
+ "osmpbf",
  "prost",
  "quick-xml",
  "reqwest",

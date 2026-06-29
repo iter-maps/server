@@ -4,6 +4,7 @@ mod jobs;
 mod netex;
 mod reliability;
 mod scheduler;
+mod shapes;
 
 use std::path::PathBuf;
 

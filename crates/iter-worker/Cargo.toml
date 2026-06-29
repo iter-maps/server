@@ -29,6 +29,7 @@ prost = { workspace = true }
 quick-xml = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true }
+osmpbf = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

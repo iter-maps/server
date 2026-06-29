@@ -44,6 +44,14 @@ pub fn from_region(
                 .unwrap_or_else(|| {
                     data_dir.join(format!("netex/{}.netex.xml.gz", feed.id.to_lowercase()))
                 });
+            // OSM clip to stitch rail `shapes.txt` from (best-effort, extends ADR
+            // 0016): the pipeline's routing clip lives at `<graph>/<region>.osm.pbf`;
+            // `OSM_CLIP_PATH` overrides. Absent → GTFS is emitted without shapes.
+            let osm_clip_path = Some(
+                config::opt("OSM_CLIP_PATH")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| data_dir.join(format!("graph/{}.osm.pbf", region.id))),
+            );
             jobs.push(Box::new(fl_gtfs::FlGtfsBuild {
                 netex_path,
                 out_path: data_dir.join(format!("graph/{}.gtfs.zip", feed.id)),
@@ -55,6 +63,7 @@ pub fn from_region(
                     .filter(|u| !u.is_empty()),
                 // The FL feed is the Italian NeTEx-IT profile (ADR 0017).
                 netex_profile: iter_region_drivers::DEFAULT_NETEX_PROFILE.to_string(),
+                osm_clip_path,
                 http: http.clone(),
             }));
         }
