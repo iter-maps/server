@@ -15,8 +15,10 @@
 //! with the GTFS route id + colour.
 //!
 //! `metro-stations`: per metro station, emit a `concourse` (concave hull of the
-//! station's stop/platform/exit points), one `platform` per direction-stop (a
-//! side strip offset along the real track), and an `exit` per `subway_entrance`.
+//! station's stop/platform/exit points, smoothed into an organic footprint via
+//! Chaikin corner-cutting + Visvalingam-Whyatt simplification), one `platform`
+//! per direction-stop (a side strip offset along the real track), and an `exit`
+//! per `subway_entrance`.
 //! Geometry is computed in local-planar metres (`geo` concave hull, manual
 //! perpendicular offset).
 
@@ -26,7 +28,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use geo::{ConcaveHull, ConvexHull, MultiPoint, Point as GeoPoint};
+use geo::coordinate_position::CoordPos;
+use geo::{
+    Area, ConcaveHull, ConvexHull, CoordinatePosition, LineString, MultiPoint, Point as GeoPoint,
+    Polygon, SimplifyVwPreserve, Validation, coord,
+};
 use osmpbf::{Element, ElementReader};
 use serde_json::{Value, json};
 
@@ -383,6 +389,18 @@ const PLAT_WIDTH_M: f64 = 5.0;
 const EXIT_ASSIGN_M: f64 = 400.0;
 const HULL_CONCAVITY_M: f64 = 60.0;
 
+// Concourse smoothing (ADR 0014's "morphological smoothing"): round the jagged
+// hull into an organic footprint with pure, dependency-free geometry — Chaikin
+// corner-cutting then Visvalingam-Whyatt simplification. Smoothing falls back to
+// the raw hull for a station if it would invalidate the polygon, drop a stop, or
+// distort the area beyond tolerance (see `smooth_ring`).
+/// Chaikin corner-cutting passes applied to the hull ring.
+const CHAIKIN_ITERS: usize = 2;
+/// Visvalingam-Whyatt area tolerance (m²) trading vertex count for fidelity.
+const SIMPLIFY_TOLERANCE_M2: f64 = 12.0;
+/// Max fractional area change smoothing may introduce before we keep the raw hull.
+const SMOOTH_AREA_TOLERANCE: f64 = 0.25;
+
 fn to_m(proj: Projection, lon: f64, lat: f64) -> (f64, f64) {
     (
         (lon - proj.origin_lon) * proj.m_per_deg_lon,
@@ -461,6 +479,8 @@ fn build_metro_stations(clip: &Path, driver: &dyn TransitOverlayDriver) -> anyho
     let mut platforms = Vec::new();
     // station slug → points feeding its concourse hull
     let mut hull_pts: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
+    // station slug → just the stop points, which smoothing must not drop
+    let mut stop_pts: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
 
     for r in &rels {
         let terminus = r
@@ -472,6 +492,10 @@ fn build_metro_stations(clip: &Path, driver: &dyn TransitOverlayDriver) -> anyho
             let Some(stop) = stops.get(id) else { continue };
             let slug = slug(&stop.name);
             hull_pts
+                .entry(slug.clone())
+                .or_default()
+                .push((stop.x, stop.y));
+            stop_pts
                 .entry(slug.clone())
                 .or_default()
                 .push((stop.x, stop.y));
@@ -524,7 +548,8 @@ fn build_metro_stations(clip: &Path, driver: &dyn TransitOverlayDriver) -> anyho
     slugs.sort();
     let mut features = Vec::new();
     for slug in slugs {
-        if let Some(ring) = station_hull(proj, &hull_pts[slug]) {
+        let stops = stop_pts.get(slug).map(Vec::as_slice).unwrap_or(&[]);
+        if let Some(ring) = station_hull(proj, &hull_pts[slug], stops) {
             features.push(json!({
                 "type": "Feature",
                 "properties": { "kind": "concourse", "station": slug, "level": 0 },
@@ -745,9 +770,15 @@ fn nearest_station(centroids: &[(String, f64, f64)], x: f64, y: f64) -> Option<(
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-/// The concave hull of a station's points as a lon/lat ring (convex-hull
-/// fallback for sparse stations).
-fn station_hull(proj: Projection, pts: &[(f64, f64)]) -> Option<Vec<Value>> {
+/// The concourse footprint of a station's points as a lon/lat ring: a concave
+/// hull (convex-hull fallback for sparse stations) smoothed into an organic
+/// shape. `stop_pts` are the platform stop points the footprint must still
+/// contain after smoothing.
+fn station_hull(
+    proj: Projection,
+    pts: &[(f64, f64)],
+    stop_pts: &[(f64, f64)],
+) -> Option<Vec<Value>> {
     if pts.len() < 3 {
         return None;
     }
@@ -770,11 +801,80 @@ fn station_hull(proj: Projection, pts: &[(f64, f64)]) -> Option<Vec<Value>> {
     if ring.len() < 4 {
         return None;
     }
+    let ring = smooth_ring(&ring, stop_pts);
     Some(
         ring.iter()
             .map(|(x, y)| Value::Array(from_m(proj, *x, *y).iter().map(|v| json!(v)).collect()))
             .collect(),
     )
+}
+
+/// Round a closed hull ring into an organic concourse footprint: Chaikin
+/// corner-cutting then Visvalingam-Whyatt simplification. Falls back to `ring`
+/// unchanged if the smoothed result would be degenerate, self-intersecting, drop
+/// a stop point, or distort the area beyond `SMOOTH_AREA_TOLERANCE`.
+fn smooth_ring(ring: &[(f64, f64)], stop_pts: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    // Degenerate ring (fewer than a triangle's worth of closed vertices): nothing
+    // to round, hand it back untouched.
+    if ring.len() < 4 {
+        return ring.to_vec();
+    }
+    let mut cut = ring.to_vec();
+    for _ in 0..CHAIKIN_ITERS {
+        cut = chaikin(&cut);
+    }
+    let line = LineString::from(cut);
+    let simplified = Polygon::new(line, vec![]).simplify_vw_preserve(SIMPLIFY_TOLERANCE_M2);
+
+    let exterior = simplified.exterior();
+    let out: Vec<(f64, f64)> = exterior.points().map(|p| (p.x(), p.y())).collect();
+    if out.len() < 4 || out.first() != out.last() || !simplified.is_valid() {
+        return ring.to_vec();
+    }
+
+    // Smoothing must not shrink the footprint off its platforms, nor wildly
+    // distort the hull area. A stop sitting exactly on the smoothed boundary
+    // still counts as covered — many stops are hull vertices, and corner-cutting
+    // lands them on the edge rather than strictly inside.
+    if stop_pts
+        .iter()
+        .any(|(x, y)| simplified.coordinate_position(&coord! { x: *x, y: *y }) == CoordPos::Outside)
+    {
+        return ring.to_vec();
+    }
+    let raw_area = Polygon::new(LineString::from(ring.to_vec()), vec![])
+        .unsigned_area()
+        .max(1e-6);
+    let delta = (simplified.unsigned_area() - raw_area).abs() / raw_area;
+    // Fail soft on non-finite coords (NaN/inf from upstream): a NaN delta would
+    // slip past `delta > tolerance`, so keep the raw hull instead.
+    if !delta.is_finite() || delta > SMOOTH_AREA_TOLERANCE {
+        return ring.to_vec();
+    }
+    out
+}
+
+/// One Chaikin corner-cutting pass over a closed ring (first == last): each edge
+/// contributes its 1/4 and 3/4 points, rounding every corner. The result stays
+/// closed.
+fn chaikin(ring: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let n = ring.len();
+    if n < 4 {
+        return ring.to_vec();
+    }
+    // Operate on the open vertex sequence (drop the duplicate closing point).
+    let open = &ring[..n - 1];
+    let mut out = Vec::with_capacity(open.len() * 2 + 1);
+    for i in 0..open.len() {
+        let a = open[i];
+        let b = open[(i + 1) % open.len()];
+        out.push((a.0 * 0.75 + b.0 * 0.25, a.1 * 0.75 + b.1 * 0.25));
+        out.push((a.0 * 0.25 + b.0 * 0.75, a.1 * 0.25 + b.1 * 0.75));
+    }
+    if let Some(first) = out.first().copied() {
+        out.push(first);
+    }
+    out
 }
 
 fn dist2(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -806,6 +906,7 @@ fn slug(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geo::Contains;
 
     /// The local-planar projection the generic geometry tests run in (Rome's, via
     /// the driver) — the metre math is generic; we just need a concrete origin.
@@ -843,7 +944,7 @@ mod tests {
             (0.0, 100.0),
             (50.0, 50.0),
         ];
-        let ring = station_hull(test_proj(), &pts).unwrap();
+        let ring = station_hull(test_proj(), &pts, &pts).unwrap();
         assert!(ring.len() >= 4, "a hull ring");
         // ring coordinates are [lon, lat] back in WGS84 near the projection origin.
         let lon = ring[0][0].as_f64().unwrap();
@@ -897,5 +998,249 @@ mod tests {
     fn missing_gtfs_is_fail_soft() {
         assert!(read_gtfs_routes(Path::new("/no/such.zip")).is_err());
         // build_transit_lines treats the error as an empty map (unwrap_or_default).
+    }
+
+    /// Build a polygon from a closed metre ring for the geometric assertions.
+    fn poly(ring: &[(f64, f64)]) -> Polygon<f64> {
+        Polygon::new(LineString::from(ring.to_vec()), vec![])
+    }
+
+    #[test]
+    fn chaikin_rounds_a_square_corners() {
+        // a closed unit-ish square (first == last)
+        let square = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 0.0),
+        ];
+        let cut = chaikin(&square);
+        // one pass turns each of the 4 corners into 2 vertices → 8 (+ closing).
+        assert_eq!(cut.len(), 9, "8 cut vertices + closing point");
+        assert_eq!(cut.first(), cut.last(), "stays closed");
+        // the (0,0) corner is specifically rounded: the first edge (0,0)->(100,0)
+        // contributes its 1/4 and 3/4 blends, so the two vertices flanking the old
+        // corner sit at (25,0) and (75,0), not on (0,0) itself.
+        let near =
+            |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9;
+        assert!(near(cut[0], (25.0, 0.0)), "1/4 blend along the first edge");
+        assert!(near(cut[1], (75.0, 0.0)), "3/4 blend along the first edge");
+        assert!(
+            !cut.iter().any(|&v| near(v, (0.0, 0.0))),
+            "the original corner is cut away"
+        );
+        // cut vertices stay inside the convex square (corner-cutting shrinks).
+        assert!(
+            cut.iter()
+                .all(|(x, y)| (0.0..=100.0).contains(x) && (0.0..=100.0).contains(y))
+        );
+    }
+
+    #[test]
+    fn smoothing_keeps_a_valid_closed_polygon_containing_stops() {
+        // a jagged-ish octagon-ish ring around stop points it must keep covering.
+        let stops = vec![(20.0, 20.0), (80.0, 20.0), (50.0, 80.0)];
+        let ring = vec![
+            (0.0, 0.0),
+            (50.0, -10.0),
+            (100.0, 0.0),
+            (110.0, 50.0),
+            (100.0, 100.0),
+            (50.0, 110.0),
+            (0.0, 100.0),
+            (-10.0, 50.0),
+            (0.0, 0.0),
+        ];
+        let out = smooth_ring(&ring, &stops);
+        assert!(out.len() >= 4, "non-degenerate ring");
+        assert_eq!(out.first(), out.last(), "closed");
+        let p = poly(&out);
+        assert!(p.is_valid(), "no self-intersection");
+        for (x, y) in &stops {
+            assert!(p.contains(&GeoPoint::new(*x, *y)), "still covers the stop");
+        }
+        // area stays within the documented tolerance of the raw hull.
+        let raw = poly(&ring).unsigned_area();
+        let delta = (p.unsigned_area() - raw).abs() / raw;
+        assert!(delta <= SMOOTH_AREA_TOLERANCE, "area within tolerance");
+    }
+
+    #[test]
+    fn smoothing_does_not_blow_up_vertex_count() {
+        // Chaikin densifies, but VW simplification must claw the count back so the
+        // smoothed ring is not dramatically heavier than the Chaikin intermediate.
+        let mut ring: Vec<(f64, f64)> = (0..12)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / 12.0;
+                (50.0 + 60.0 * a.cos(), 50.0 + 60.0 * a.sin())
+            })
+            .collect();
+        ring.push(ring[0]); // close the ring
+        // Reproduce the pre-simplify Chaikin expansion the smoother runs.
+        let mut expanded = ring.clone();
+        for _ in 0..CHAIKIN_ITERS {
+            expanded = chaikin(&expanded);
+        }
+        let out = smooth_ring(&ring, &[(50.0, 50.0)]);
+        // The smoothing path actually ran (no fallback to the raw ring)...
+        assert_ne!(out, ring, "smoothing applied rather than falling back");
+        assert_eq!(out.first(), out.last(), "closed");
+        // ...and VW brought the vertex count back below the Chaikin intermediate.
+        assert!(
+            out.len() < expanded.len(),
+            "VW simplifies below the Chaikin expansion: {} vs expanded {}",
+            out.len(),
+            expanded.len()
+        );
+    }
+
+    #[test]
+    fn degenerate_inputs_fall_back_unchanged() {
+        // <4 points: returned as-is (smoothing is a no-op).
+        let tri = vec![(0.0, 0.0), (10.0, 0.0), (5.0, 10.0)];
+        assert_eq!(smooth_ring(&tri, &[]), tri);
+        // chaikin on a sub-4-vertex ring is identity.
+        assert_eq!(chaikin(&tri), tri);
+        // station_hull rejects <3 input points (degenerate, no concourse).
+        assert!(station_hull(test_proj(), &[(0.0, 0.0), (1.0, 1.0)], &[]).is_none());
+    }
+
+    #[test]
+    fn smoothing_falls_back_when_it_would_drop_a_stop() {
+        // a stop sitting right on the hull boundary corner: Chaikin cuts that
+        // corner inward, so the corner stop ends up outside → fall back to raw.
+        let ring = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 0.0),
+        ];
+        let corner_stop = vec![(0.0, 0.0)];
+        let out = smooth_ring(&ring, &corner_stop);
+        assert_eq!(
+            out, ring,
+            "kept the raw hull to keep covering the corner stop"
+        );
+    }
+
+    #[test]
+    fn smoothing_applies_when_a_stop_lies_on_the_smoothed_boundary() {
+        // The old strict-interior guard fell back whenever a stop sat exactly on
+        // the smoothed edge. Take a vertex of the smoothed ring as a stop: it lies
+        // ON the boundary, so the relaxed guard must keep smoothing instead of
+        // reverting to the raw hull.
+        let ring = vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 0.0),
+        ];
+        let smoothed = smooth_ring(&ring, &[]);
+        assert_ne!(smoothed, ring, "baseline: smoothing runs with no stops");
+        // A vertex of the smoothed boundary, used as a stop point.
+        let boundary_stop = smoothed[1];
+        assert_eq!(
+            poly(&smoothed).coordinate_position(&coord! { x: boundary_stop.0, y: boundary_stop.1 }),
+            CoordPos::OnBoundary,
+            "the chosen stop is exactly on the smoothed edge"
+        );
+        let out = smooth_ring(&ring, &[boundary_stop]);
+        assert_eq!(
+            out, smoothed,
+            "on-boundary stop still counts as covered → smoothing applies"
+        );
+    }
+
+    #[test]
+    fn smoothing_falls_back_on_self_intersecting_input() {
+        // A bowtie (figure-eight) ring is self-intersecting; whatever Chaikin/VW
+        // produce, the validity guard must reject it and hand back the raw ring.
+        let bowtie = vec![
+            (0.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (100.0, 0.0),
+            (0.0, 0.0),
+        ];
+        let out = smooth_ring(&bowtie, &[]);
+        assert_eq!(out, bowtie, "invalid smoothed polygon falls back to raw");
+    }
+
+    #[test]
+    fn smoothing_falls_back_on_excessive_area_distortion() {
+        // A star-like ring with deep spikes: Chaikin corner-cutting collapses the
+        // spikes, shrinking the area well past SMOOTH_AREA_TOLERANCE, so the guard
+        // keeps the raw hull. No stops, so only the area branch can fire.
+        let mut ring = Vec::new();
+        let spikes = 8;
+        for i in 0..spikes {
+            let outer = std::f64::consts::TAU * i as f64 / spikes as f64;
+            let inner = std::f64::consts::TAU * (i as f64 + 0.5) / spikes as f64;
+            ring.push((100.0 * outer.cos(), 100.0 * outer.sin()));
+            ring.push((4.0 * inner.cos(), 4.0 * inner.sin()));
+        }
+        ring.push(ring[0]); // close
+        let raw_area = poly(&ring).unsigned_area();
+        let out = smooth_ring(&ring, &[]);
+        assert_eq!(
+            out, ring,
+            "area distortion beyond tolerance falls back to the raw star"
+        );
+        // Sanity: the distortion really did exceed the tolerance.
+        let mut cut = ring.clone();
+        for _ in 0..CHAIKIN_ITERS {
+            cut = chaikin(&cut);
+        }
+        let smoothed =
+            Polygon::new(LineString::from(cut), vec![]).simplify_vw_preserve(SIMPLIFY_TOLERANCE_M2);
+        // The smoothed star stays valid, so the area branch — not the validity
+        // guard — is what forces the fallback.
+        assert!(smoothed.is_valid(), "smoothed star is a valid polygon");
+        let smoothed_area = smoothed.unsigned_area();
+        assert!(
+            (smoothed_area - raw_area).abs() / raw_area > SMOOTH_AREA_TOLERANCE,
+            "the engineered input distorts area past tolerance"
+        );
+    }
+
+    #[test]
+    fn station_hull_emits_a_smoothed_ring_covering_stops_in_wgs84() {
+        // End-to-end: project -> hull -> smooth -> unproject. The returned lon/lat
+        // ring must be closed, valid, and still cover every stop after the round
+        // trip back through from_m, where float error could nudge a boundary stop.
+        let proj = test_proj();
+        let pts = vec![
+            (0.0, 0.0),
+            (120.0, 0.0),
+            (120.0, 80.0),
+            (0.0, 80.0),
+            (60.0, 40.0),
+        ];
+        let stops = vec![(20.0, 20.0), (100.0, 20.0), (60.0, 60.0)];
+        let ring = station_hull(proj, &pts, &stops).unwrap();
+        // Reproject the WGS84 ring back into metres.
+        let metres: Vec<(f64, f64)> = ring
+            .iter()
+            .map(|c| {
+                let lon = c[0].as_f64().unwrap();
+                let lat = c[1].as_f64().unwrap();
+                to_m(proj, lon, lat)
+            })
+            .collect();
+        assert!(metres.len() >= 4, "non-degenerate ring");
+        assert_eq!(metres.first(), metres.last(), "closed after round trip");
+        let p = poly(&metres);
+        assert!(p.is_valid(), "valid after round trip");
+        for (x, y) in &stops {
+            // Allow on-boundary; round7 plus projection can land a stop on the edge.
+            assert_ne!(
+                p.coordinate_position(&coord! { x: *x, y: *y }),
+                CoordPos::Outside,
+                "stop still covered after the WGS84 round trip"
+            );
+        }
     }
 }

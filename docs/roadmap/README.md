@@ -76,9 +76,12 @@ pipeline and worker frameworks are in place. What remains:
 - **Overlay geometry** ✅ done (pure Rust, ADR 0014) — `transit-lines` (way-union
   `MultiLineString` per line, GTFS colours) and `metro-stations` (concave-hull
   concourses + per-direction platform strips offset along the real track + named
-  exits), proven on the real Rome clip (9 lines; 443 station features).
-  **Remaining:** the reference impl's morphological smoothing + corridor union
-  (the current concourse is a concave hull) and the `STYLES` render step.
+  exits), proven on the real Rome clip (9 lines; 443 station features). The
+  concourse is now smoothed into an organic footprint (Chaikin corner-cutting +
+  Visvalingam-Whyatt simplification, with a per-station fall-back to the raw hull
+  if smoothing would invalidate the polygon, drop a stop, or distort the area).
+  **Remaining:** corridor union (merging buffered real-corridor geometry into the
+  concourse, gated on a robust polygon buffer) and the `STYLES` render step.
   Design: concept doc 09 — overlays-geometry · Decision: ADR 0014.
 - **Pipeline refresh triggers** — the runner framework, the `FORCE_*`/`SKIP_*`
   knobs, and the build steps are implemented; the daily (`--gtfs` + graph) /

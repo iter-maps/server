@@ -15,6 +15,10 @@ routable flags.
 - **Build order:** Phase 0 generalize the Rome pass; Phase 1 ingest per-region
   feeds; Phase 2 widen OSM extent to Europe. Cross-boundary line resolution is
   best-effort, never-fail.
+- **Landed so far:** the metro-stations concourse is smoothed into an organic
+  footprint (Chaikin corner-cutting + Visvalingam-Whyatt simplification, ADR
+  0014). Still remaining on the geometry side: corridor union (gated on a robust
+  polygon buffer) and the `STYLES` render step.
 
 Design: concept doc 26 — transit-overlay-network-model ·
 Decision: ADR 0018

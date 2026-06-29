@@ -88,7 +88,9 @@ at `/data/photon` and is served read-write (embedded OpenSearch; ADR 0010), with
 civici baked in as low-importance house docs so location bias picks the right
 number. **OVERLAY** generates the transit overlays from the OSM clip in pure Rust —
 `transit-lines` (way-union line geometry) and `metro-stations` (concave-hull
-concourses + per-direction platform strips + exits), no shapely (ADR 0014).
+concourses smoothed into organic footprints via Chaikin corner-cutting +
+Visvalingam-Whyatt simplification, plus per-direction platform strips + exits),
+no shapely (ADR 0014).
 Routing/geocoding/overlay steps no-op for a region lacking that config. STYLES
 lands next (roadmap).
 
