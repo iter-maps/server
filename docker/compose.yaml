@@ -107,7 +107,7 @@ services:
     environment:
       JAVA_TOOL_OPTIONS: "-Xmx${PHOTON_HEAP:-1g}"
     # read-WRITE: embedded OpenSearch writes lock/translog files even in serve
-    # mode, so a read-only mount fails to start (concept doc 06 §7).
+    # mode, so a read-only mount fails to start.
     volumes:
       - iter-data:/data
     networks: [iter-net]

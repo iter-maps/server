@@ -2,7 +2,7 @@ version = 1
 
 # REUSE (https://reuse.software) spec 3.x license/copyright declarations for the
 # iter-maps/server repository. This is the multi-license repo's auditability
-# backbone: AGPL-3.0 code + CC-BY-4.0 docs (concept 29 §6.2). Full license texts
+# backbone: AGPL-3.0 code + CC-BY-4.0 docs. Full license texts
 # live under LICENSES/ named by their SPDX identifier. These [[annotations]]
 # blocks declare licensing for files that do not carry an inline SPDX header.
 
