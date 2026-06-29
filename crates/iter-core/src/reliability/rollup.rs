@@ -468,9 +468,9 @@ mod tests {
         // a ∪ b == b ∪ a
         let mut ab = a.clone();
         ab.merge(&b);
-        let mut ba = b.clone();
-        ba.merge(&a);
-        assert_eq!(ab, ba, "merge must be commutative");
+        let mut b_a = b.clone();
+        b_a.merge(&a);
+        assert_eq!(ab, b_a, "merge must be commutative");
 
         // Total count is preserved across merges.
         assert_eq!(left.count(), 5 + 4 + 4);

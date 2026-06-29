@@ -65,7 +65,7 @@ impl ReliabilityCell {
 pub struct ReliabilityResponse {
     pub route: String,
     /// The direction token exactly as the caller supplied it. Echoed verbatim
-    /// rather than the parsed integer so an unparseable direction comes back as
+    /// rather than the parsed integer so an unparsable direction comes back as
     /// the original token instead of a normalization sentinel.
     pub direction: String,
     pub stop: String,

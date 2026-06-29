@@ -9,3 +9,5 @@ LOD = "LOD"
 comune = "comune"
 # `flate2` — the DEFLATE crate, not a misspelling of "flat".
 flate = "flate"
+# Hyphen-split "mis-" prefix (mis-bucket, mis-grouped), not a misspelling.
+mis = "mis"

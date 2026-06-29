@@ -23,7 +23,7 @@ use crate::state::AppState;
 /// non-integer `direction` is treated as "no such slice" → empty cells (the
 /// store keys direction as an integer), keeping the handler fail-soft. The
 /// caller's raw `direction` token is echoed back verbatim; only the lookup uses
-/// the parsed integer, so an unparseable direction never surfaces as a sentinel.
+/// the parsed integer, so an unparsable direction never surfaces as a sentinel.
 pub async fn reliability(
     Path((route, direction, stop)): Path<(String, String, String)>,
     State(state): State<AppState>,

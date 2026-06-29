@@ -537,7 +537,7 @@ async fn reliability_non_integer_direction_is_fail_soft_empty() {
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["cells"].as_array().unwrap().len(), 0);
-    // The unparseable token is echoed verbatim, not the i32::MIN miss sentinel.
+    // The unparsable token is echoed verbatim, not the i32::MIN miss sentinel.
     assert_eq!(v["direction"], "notanint");
 }
 
