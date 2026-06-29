@@ -20,6 +20,7 @@ use std::io::{BufRead, Write};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
+use iter_core::reliability::rollup::{days_from_ymd, ymd_from_days};
 use iter_region_drivers::NetexProfile;
 
 use crate::shapes::Shape;
@@ -622,40 +623,6 @@ fn expand_bits(from: &str, bits: &str) -> Vec<String> {
         .filter(|(_, c)| *c == '1')
         .map(|(i, _)| ymd_from_days(start + i as i64))
         .collect()
-}
-
-/// `YYYYMMDD` → days since 1970-01-01 (Howard Hinnant's `days_from_civil`).
-fn days_from_ymd(s: &str) -> Option<i64> {
-    if s.len() != 8 || !s.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let y: i64 = s[0..4].parse().ok()?;
-    let m: i64 = s[4..6].parse().ok()?;
-    let d: i64 = s[6..8].parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return None;
-    }
-    let y = y - i64::from(m <= 2);
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146097 + doe - 719468)
-}
-
-/// Days since 1970-01-01 → `YYYYMMDD` (Howard Hinnant's `civil_from_days`).
-fn ymd_from_days(z: i64) -> String {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = y + i64::from(m <= 2);
-    format!("{y:04}{m:02}{d:02}")
 }
 
 /// CSV-quote a field if it contains a comma, quote, or newline.
