@@ -79,3 +79,4 @@ a typo) do not need one.
 - [0033](0033-weather-aware-rerank-factor.md) — Server-side Open-Meteo weather factor for the composite reranker
 - [0034](0034-weather-fetch-bounded-and-day-pinned.md) — Weather fetch: bounded response and journey-day pinning
 - [0035](0035-mode-aware-weather-exposure.md) — Mode-aware weather exposure in the rerank weather factor
+- [0036](0036-per-segment-multi-point-weather.md) — Per-segment local weather from multi-point trip sampling

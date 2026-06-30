@@ -1301,11 +1301,11 @@ const FOUL_FORECAST: &str = r#"{"latitude":41.9,"longitude":12.5,"hourly":{
 const WEATHER_PLAN: &str = r#"{"data":{"plan":{"itineraries":[
   {"duration":600,"legs":[
     {"transitLeg":false,"mode":"WALK","duration":120.0,"startTime":0.0,"endTime":120000.0,"from":{"lat":41.90278,"lon":12.49636}},
-    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":1920000.0,"endTime":2700000.0,"route":{"gtfsId":"WETWALK"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s2"}}}
+    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":1920000.0,"endTime":2700000.0,"route":{"gtfsId":"WETWALK"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s2"},"lat":41.90278,"lon":12.49636}}
   ]},
   {"duration":600,"legs":[
     {"transitLeg":false,"mode":"WALK","duration":120.0,"startTime":0.0,"endTime":120000.0,"from":{"lat":41.90278,"lon":12.49636}},
-    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":120000.0,"endTime":900000.0,"route":{"gtfsId":"DRYWALK"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s1"}}}
+    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":120000.0,"endTime":900000.0,"route":{"gtfsId":"DRYWALK"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s1"},"lat":41.90278,"lon":12.49636}}
   ]}
 ]}}}"#;
 
@@ -1533,4 +1533,119 @@ async fn routing_default_path_makes_no_weather_call_even_when_enabled() {
         seen.lock().unwrap().is_none(),
         "default path must not call the weather upstream"
     );
+}
+
+// --- per-segment multi-point weather (ADR 0036) -----------------------------
+
+/// A two-itinerary plan whose itineraries share one origin cell (41.90,12.50) but
+/// END their identical-length (1800 s) final walk in DIFFERENT destination cells:
+/// RAINYEND ends at (42.00,13.00), DRYEND ends at (40.00,10.00). Every non-weather
+/// factor ties exactly — equal first walk, equal ride, equal final-walk duration,
+/// equal boardings/carbon, no history — so ONLY the destination-local weather can
+/// reorder them, proving per-segment sampling reads each arrival cell. RAINYEND is
+/// listed FIRST so a neutral factor keeps it first; rain at its destination demotes
+/// it below DRYEND.
+const MULTIPOINT_PLAN: &str = r#"{"data":{"plan":{"itineraries":[
+  {"duration":600,"legs":[
+    {"transitLeg":false,"mode":"WALK","duration":120.0,"startTime":0.0,"endTime":120000.0,"from":{"lat":41.90278,"lon":12.49636}},
+    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":120000.0,"endTime":900000.0,"route":{"gtfsId":"RAINYEND"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s1"},"lat":41.90278,"lon":12.49636}},
+    {"transitLeg":false,"mode":"WALK","duration":1800.0,"startTime":900000.0,"endTime":2700000.0,"from":{"lat":42.00,"lon":13.00}}
+  ]},
+  {"duration":600,"legs":[
+    {"transitLeg":false,"mode":"WALK","duration":120.0,"startTime":0.0,"endTime":120000.0,"from":{"lat":41.90278,"lon":12.49636}},
+    {"transitLeg":true,"mode":"BUS","distance":3000.0,"startTime":120000.0,"endTime":900000.0,"route":{"gtfsId":"DRYEND"},"trip":{"directionId":0},"from":{"stop":{"gtfsId":"s2"},"lat":41.90278,"lon":12.49636}},
+    {"transitLeg":false,"mode":"WALK","duration":1800.0,"startTime":900000.0,"endTime":2700000.0,"from":{"lat":40.00,"lon":10.00}}
+  ]}
+]}}}"#;
+
+/// A multi-location Open-Meteo body: a JSON ARRAY of per-point objects in the input
+/// order of the distinct sample points. The points sort by (lat, lon, hour): the
+/// DRYEND destination (40.0,10.0) sorts first and is CALM; the shared origin
+/// (41.9,12.5) sorts second and is CALM; the RAINYEND destination (42.0,13.0) sorts
+/// last and is POURING. So only RAINYEND's arrival cell is wet.
+const WET_DESTINATION_BODY: &str = r#"[
+  {"hourly":{"temperature_2m":[20.0],"precipitation":[0.0],"apparent_temperature":[20.0],"uv_index":[1.0],"wind_speed_10m":[3.0]}},
+  {"hourly":{"temperature_2m":[20.0],"precipitation":[0.0],"apparent_temperature":[20.0],"uv_index":[1.0],"wind_speed_10m":[3.0]}},
+  {"hourly":{"temperature_2m":[7.0],"precipitation":[9.0],"apparent_temperature":[5.0],"uv_index":[0.0],"wind_speed_10m":[8.0]}}
+]"#;
+
+/// Read back the second-leg (bus) route ids of a [`MULTIPOINT_PLAN`] response.
+fn multipoint_routes(body: &[u8]) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).unwrap();
+    v["data"]["plan"]["itineraries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|it| {
+            it["legs"][1]["route"]["gtfsId"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_penalizes_a_rainy_destination_walk() {
+    // End-to-end per-segment locality: the two itineraries tie on every non-weather
+    // factor and differ only in WHERE their identical final walk ends. Only
+    // RAINYEND's arrival cell is wet, so its final walk is penalized and DRYEND
+    // leads — proving the rerank sampled each arrival cell's own local forecast, not
+    // a single shared origin forecast (ADR 0036).
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, MULTIPOINT_PLAN, "application/json").await;
+    let (weather, _seen, _hw) = weather_stub(StatusCode::OK, WET_DESTINATION_BODY).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(multipoint_routes(&body), vec!["DRYEND", "RAINYEND"]);
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_request_lists_distinct_points_comma_separated() {
+    // The multi-point fetch is ONE request over the journey's distinct cells —
+    // both destinations (40,10 and 42,13) and the shared origin (41.9,12.5) —
+    // comma-separated in a single outbound call (ADR 0036), never N requests. The
+    // points are sorted, so the coordinate lists are deterministic.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, MULTIPOINT_PLAN, "application/json").await;
+    let (weather, seen, _hw) = weather_stub(StatusCode::OK, WET_DESTINATION_BODY).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, _) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    let q = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("weather stub was called");
+    // All three distinct cells, comma-separated, in one request — coarse-rounded and
+    // sorted ascending by (lat, lon).
+    assert!(q.contains("latitude=40,41.9,42"), "lat list: {q}");
+    assert!(q.contains("longitude=10,12.5,13"), "lon list: {q}");
+    // The richer comfort fields ride along.
+    assert!(q.contains("apparent_temperature"), "apparent: {q}");
+    assert!(q.contains("uv_index"), "uv: {q}");
+    assert!(q.contains("wind_speed_10m"), "wind: {q}");
+    // No precise coordinate ever leaves the gateway.
+    assert!(!q.contains("41.90278"), "leaked precise lat: {q}");
+}
+
+#[tokio::test]
+async fn routing_rerank_weather_partial_response_is_fail_soft_neutral() {
+    // A response shorter than the distinct-point list (one calm element for three
+    // points) resolves only the first sorted point; the two destination cells stay
+    // unsampled → neutral. Both itineraries tie on every factor, so the rerank
+    // completes with OTP's original order (RAINYEND first) intact (ADR 0036
+    // fail-soft).
+    let short_body = r#"[{"hourly":{"temperature_2m":[20.0],"precipitation":[0.0],"apparent_temperature":[20.0]}}]"#;
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, MULTIPOINT_PLAN, "application/json").await;
+    let (weather, _seen, _hw) = weather_stub(StatusCode::OK, short_body).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let (status, _, body) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(multipoint_routes(&body), vec!["RAINYEND", "DRYEND"]);
 }

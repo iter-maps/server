@@ -23,19 +23,26 @@ Rank itineraries by weather, comfort, cost, eco-impact and accessibility
   passthrough. Each factor is min-max normalized per response and combined into an
   additive `rerankScore` (the raw reliability factor is still surfaced as
   `reliabilityScore`). The **weather factor** (ADR 0033) is the gateway's first
-  external runtime data dependency: a keyless Open-Meteo forecast for the journey's
-  coarse (~1 km) origin, opt-in and default-off (`WEATHER_API_URL`), short-timeout,
-  TTL-cached, and fail-soft/neutral-on-failure. It scores weather exposure **by
-  type** (ADR 0035): precipitation hits truly-outdoor minutes only (walking +
-  outdoor waiting — a vehicle keeps rain off for every mode), while temperature
-  extremes also hit in-vehicle minutes scaled by a per-mode climate-control
-  coefficient (air-conditioned rail/metro near-sheltered, bus/tram partially
-  exposed). So a rainy day favors any in-vehicle route incl. a bus, and a hot day
-  favors metro/rail over an equivalent bus. **Remaining wave-1 factors:** crowding
-  and covered-transfer scoring, plus per-factor explanations. The
-  covered/underground-transfer refinement (not counting a sheltered metro transfer
-  wait as outdoor) stays deferred — it needs station-topology data not yet built,
-  so every wait/transfer gap currently counts as outdoor. The carbon and weather
-  constants (including the per-mode temperature coefficients) are heuristic
-  estimates and the weights are unmeasured; learned/client-tuned weights are
-  deferred to waves 2–3.
+  external runtime data dependency: keyless Open-Meteo forecasts, opt-in and
+  default-off (`WEATHER_API_URL`), short-timeout, TTL-cached, and
+  fail-soft/neutral-on-failure, sent only coarse (~1 km) coordinates. It scores
+  weather exposure **by type** (ADR 0035): precipitation hits truly-outdoor minutes
+  only (walking + outdoor waiting — a vehicle keeps rain off for every mode), while
+  temperature extremes also hit in-vehicle minutes scaled by a per-mode
+  climate-control coefficient (air-conditioned rail/metro near-sheltered, bus/tram
+  partially exposed). So a rainy day favors any in-vehicle route incl. a bus, and a
+  hot day favors metro/rail over an equivalent bus. It now samples **per segment**
+  (ADR 0036): each exposed segment — origin, transfer/boarding waits, destination,
+  walk legs — reads the forecast **local to its own coarse cell and its own
+  per-leg hour/day**, resolved in **one** bounded multi-location request over the
+  journey's distinct points (capped, per-point cached by `(cell, hour, date)`) so a
+  hot transfer or a rainy destination is scored where it actually happens.
+  Apparent/feels-like temperature drives the thermal badness (folding UV and wind
+  as secondary nudges). **Remaining wave-1 factors:** crowding and covered-transfer
+  scoring, plus per-factor explanations. The covered/underground-transfer
+  refinement (not counting a sheltered metro transfer wait as outdoor) stays
+  deferred — it needs station-topology data not yet built, so every wait/transfer
+  gap currently counts as outdoor even though it is now sampled in its own cell. The
+  carbon and weather constants (the per-mode temperature coefficients and the
+  UV/wind thresholds) are heuristic estimates and the weights are unmeasured;
+  learned/client-tuned weights are deferred to waves 2–3.
