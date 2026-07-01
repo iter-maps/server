@@ -18,6 +18,7 @@ pub mod overlays;
 pub mod proxy;
 pub mod reliability;
 pub mod reliability_cache;
+pub mod request_id;
 pub mod rerank;
 pub mod router;
 pub mod sprite;

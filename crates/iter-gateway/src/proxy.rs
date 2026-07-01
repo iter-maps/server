@@ -8,7 +8,7 @@
 //! delay (`?predict=historical`, ADR 0030). Both compose on one buffered plan.
 
 use axum::body::{Body, Bytes};
-use axum::extract::{RawQuery, State};
+use axum::extract::{Extension, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use iter_core::ApiError;
@@ -17,6 +17,7 @@ use iter_core::reliability::store_read::{on_time_index_from, typical_delay_index
 
 use crate::annotate::{DelayLookup, TypicalDelay, annotate_plan};
 use crate::http::ApiResult;
+use crate::request_id::{REQUEST_ID_HEADER, RequestId};
 use crate::rerank::{Profile, rerank_plan};
 use crate::state::AppState;
 use crate::weather::{JourneyWeather, journey_sample_points};
@@ -30,6 +31,7 @@ const RERANK_MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
 pub async fn routing(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
+    request_id: Option<Extension<RequestId>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<Response> {
@@ -40,13 +42,16 @@ pub async fn routing(
         .unwrap_or("application/json")
         .to_owned();
 
-    let sent = state
-        .http
-        .post(&url)
-        .header(header::CONTENT_TYPE, content_type)
-        .body(body)
-        .send()
-        .await;
+    let sent = with_request_id(
+        state
+            .http
+            .post(&url)
+            .header(header::CONTENT_TYPE, content_type)
+            .body(body),
+        request_id.as_ref(),
+    )
+    .send()
+    .await;
 
     // Default path: stream the upstream response through unchanged. Only when the
     // caller opts into a post-processing step — a recognized `rerank=<profile>`
@@ -245,28 +250,53 @@ fn try_postprocess(
 pub async fn geocode_api(
     State(state): State<AppState>,
     RawQuery(q): RawQuery,
+    request_id: Option<Extension<RequestId>>,
 ) -> ApiResult<Response> {
-    geocode(&state, "/api", q).await
+    geocode(&state, "/api", q, request_id.as_ref()).await
 }
 
 pub async fn geocode_reverse(
     State(state): State<AppState>,
     RawQuery(q): RawQuery,
+    request_id: Option<Extension<RequestId>>,
 ) -> ApiResult<Response> {
-    geocode(&state, "/reverse", q).await
+    geocode(&state, "/reverse", q, request_id.as_ref()).await
 }
 
-pub async fn geocode_status(State(state): State<AppState>) -> ApiResult<Response> {
-    geocode(&state, "/status", None).await
+pub async fn geocode_status(
+    State(state): State<AppState>,
+    request_id: Option<Extension<RequestId>>,
+) -> ApiResult<Response> {
+    geocode(&state, "/status", None, request_id.as_ref()).await
 }
 
-async fn geocode(state: &AppState, path: &str, query: Option<String>) -> ApiResult<Response> {
+async fn geocode(
+    state: &AppState,
+    path: &str,
+    query: Option<String>,
+    request_id: Option<&Extension<RequestId>>,
+) -> ApiResult<Response> {
     let url = match query {
         Some(q) if !q.is_empty() => format!("{}{}?{}", state.cfg.photon_url, path, q),
         _ => format!("{}{}", state.cfg.photon_url, path),
     };
-    let sent = state.http.get(&url).send().await;
+    let sent = with_request_id(state.http.get(&url), request_id)
+        .send()
+        .await;
     relay(sent, "photon").await
+}
+
+/// Attach the current request's `x-request-id` to an outbound engine call so a
+/// gateway log line correlates with the engine-side one (ADR 0037). A no-op when
+/// the id is absent (the request-id middleware always sets it in practice).
+fn with_request_id(
+    builder: reqwest::RequestBuilder,
+    request_id: Option<&Extension<RequestId>>,
+) -> reqwest::RequestBuilder {
+    match request_id {
+        Some(Extension(RequestId(id))) => builder.header(REQUEST_ID_HEADER.as_str(), id),
+        None => builder,
+    }
 }
 
 /// Map an upstream reqwest result onto a streamed axum response, translating
@@ -289,10 +319,46 @@ async fn relay(
 }
 
 fn upstream_error(e: &reqwest::Error, upstream: &str) -> ApiError {
-    if e.is_timeout() {
+    let err = if e.is_timeout() {
         ApiError::timeout(format!("{upstream} request timed out"))
     } else {
         ApiError::upstream_unavailable(format!("{upstream} is unavailable"))
+    };
+    // Surface the previously-silent upstream failure (ADR 0037). The response
+    // envelope is unchanged; this only adds one correlated log line.
+    //
+    // Log a scrubbed failure *kind*, never `%e`: reqwest attaches the full
+    // request URL to send/timeout/connect errors (`.with_url`), and its `Display`
+    // appends ` for url (...)`. On the Photon geocode hop that URL carries the raw
+    // user query (free-text place search on `/api`, lat/lon on `/reverse`), so
+    // `%e` would leak user data into the operator log — which ADR 0037/0024
+    // forbid. `error.code` + `upstream` already identify the failure class.
+    tracing::warn!(
+        event = "proxy.upstream",
+        outcome = "fail",
+        upstream,
+        error.code = %err.code,
+        cause = failure_kind(e),
+        "upstream request failed"
+    );
+    err
+}
+
+/// A fixed, URL-free label for a reqwest failure, so the log never echoes the
+/// request URL (and, on the geocode hop, the user's query embedded in it).
+fn failure_kind(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else if e.is_request() {
+        "request"
+    } else if e.is_body() {
+        "body"
+    } else if e.is_decode() {
+        "decode"
+    } else {
+        "other"
     }
 }
 

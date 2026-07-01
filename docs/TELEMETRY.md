@@ -51,6 +51,15 @@ running their own machine.
 Reference model: health.json, smoke test, and logs; Prometheus / Grafana / Loki
 on the self-hoster's own host.
 
+**Log schema & correlation:** the structured-log field/label convention
+(`service`/`event`/`outcome`/`error.code`/`upstream` labels vs `latency_ms`/
+`route`/`status`/`request_id`/… context fields), the `ITER_LOG_FORMAT=json`
+switch, and request correlation via `x-request-id` (minted at the gateway edge,
+accepting a W3C `traceparent`, propagated to the engines) are defined in
+**ADR 0037** and documented on `iter_core::telemetry`. Metrics (an internal
+Prometheus `/metrics` endpoint) are a planned later phase under the same
+operator-local, never-phone-home rule.
+
 ### (c) Product / usage analytics — none by default
 
 - **NONE by default.** No Firebase Analytics, no Google Analytics.

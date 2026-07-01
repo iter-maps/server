@@ -2,6 +2,12 @@
 # Local-only reference material and generated/verbatim files.
 extend-exclude = ["concept/", ".build-map/", "LICENSES/", "Cargo.lock"]
 
+[default]
+# W3C `traceparent` example ids are verbatim hex (the spec's canonical 32-hex
+# trace-id and 16-hex parent-id); the hex substrings are identifiers, not prose.
+# Word-bounded and length-pinned so it only matches those ids, not any 16-32 run.
+extend-ignore-re = ["\\b[0-9a-f]{32}\\b", "\\b[0-9a-f]{16}\\b"]
+
 [default.extend-words]
 # Level-of-detail map tiers, not a misspelling of "load".
 LOD = "LOD"

@@ -1649,3 +1649,368 @@ async fn routing_rerank_weather_partial_response_is_fail_soft_neutral() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(multipoint_routes(&body), vec!["RAINYEND", "DRYEND"]);
 }
+
+// --- Observability / request correlation (ADR 0037) ---------------------------
+
+/// An OTP stub that records the inbound `x-request-id` it received, so a test can
+/// prove the gateway propagated the correlation id to the engine hop.
+async fn otp_stub_recording_id(
+    body: &'static str,
+) -> (
+    String,
+    Arc<Mutex<Option<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use axum::http::HeaderMap;
+    use axum::routing::post;
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let recorder = seen.clone();
+    let app = Router::new().route(
+        "/otp/gtfs/v1",
+        post(move |headers: HeaderMap| {
+            let recorder = recorder.clone();
+            async move {
+                *recorder.lock().unwrap() = headers
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                (StatusCode::OK, body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), seen, handle)
+}
+
+/// A Photon stub that records the inbound `x-request-id` on the geocode GET hop,
+/// so a test can prove the gateway propagates the correlation id there too (the
+/// hop is a separate wiring from the OTP POST hop).
+async fn photon_stub_recording_id(
+    body: &'static str,
+) -> (
+    String,
+    Arc<Mutex<Option<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use axum::http::HeaderMap;
+    use axum::routing::get;
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let recorder = seen.clone();
+    let record = move |headers: HeaderMap| {
+        let recorder = recorder.clone();
+        async move {
+            *recorder.lock().unwrap() = headers
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            (StatusCode::OK, body)
+        }
+    };
+    let app = Router::new()
+        .route("/status", get(record.clone()))
+        .route("/api", get(record));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), seen, handle)
+}
+
+/// A populated gateway whose `photon_url` points at `photon_base`.
+fn gateway_with_photon(photon_base: String, root: PathBuf) -> Router {
+    let mut cfg = config_for(root);
+    cfg.photon_url = photon_base;
+    router::build(AppState::new(cfg).unwrap())
+}
+
+/// The response's `x-request-id` header value, or `None`.
+async fn response_request_id(app: &Router, req: Request<Body>) -> (StatusCode, Option<String>) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let id = resp
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    (status, id)
+}
+
+#[tokio::test]
+async fn mints_request_id_and_echoes_it_on_the_response() {
+    let (_d, app) = populated();
+    let (status, id) = response_request_id(&app, get("/livez")).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = id.expect("a minted x-request-id is echoed");
+    assert!(!id.is_empty() && id.len() <= 128, "bounded id: {id:?}");
+}
+
+#[tokio::test]
+async fn echoes_a_valid_inbound_request_id() {
+    let (_d, app) = populated();
+    let req = Request::builder()
+        .uri("/livez")
+        .header("x-request-id", "caller-supplied-42")
+        .body(Body::empty())
+        .unwrap();
+    let (status, id) = response_request_id(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(id.as_deref(), Some("caller-supplied-42"));
+}
+
+#[tokio::test]
+async fn adopts_the_traceparent_trace_id_when_no_request_id() {
+    let (_d, app) = populated();
+    let req = Request::builder()
+        .uri("/livez")
+        .header(
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let (status, id) = response_request_id(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(id.as_deref(), Some("4bf92f3577b34da6a3ce929d0e0e4736"));
+}
+
+#[tokio::test]
+async fn propagates_the_request_id_to_the_otp_hop() {
+    let (otp, seen, _h) = otp_stub_recording_id(r#"{"data":{"plan":{"itineraries":[]}}}"#).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/otp/gtfs/v1")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-request-id", "corr-abc")
+        .body(Body::from(r#"{"query":"{plan{itineraries{legs{mode}}}}"}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("corr-abc"));
+}
+
+#[tokio::test]
+async fn propagates_the_request_id_to_the_photon_hop() {
+    // The geocode GET hop is wired separately from the OTP POST hop; prove it too
+    // threads the inbound id onto the outbound Photon call.
+    let (photon, seen, _h) = photon_stub_recording_id(r#"{"status":"Ok"}"#).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_photon(photon, dir.path().to_path_buf());
+    let req = Request::builder()
+        .uri("/status")
+        .header("x-request-id", "corr-photon")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("corr-photon"));
+}
+
+#[tokio::test]
+async fn logging_never_alters_the_response_body_or_status() {
+    // Fail-soft: an unsafe inbound id is dropped (a fresh one is minted), and the
+    // proxied body/status are untouched.
+    let (otp, _seen, _h) = otp_stub_recording_id(r#"{"data":{"plan":{"itineraries":[]}}}"#).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/otp/gtfs/v1")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-request-id", "bad id with spaces")
+        .body(Body::from(r#"{"query":"{plan{itineraries{legs{mode}}}}"}"#))
+        .unwrap();
+    let (status, id) = {
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let id = resp
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        (status, id)
+    };
+    assert_eq!(status, StatusCode::OK);
+    let id = id.unwrap();
+    assert_ne!(id, "bad id with spaces", "unsafe id replaced by a mint");
+    assert!(!id.contains(' '), "minted id is safe: {id:?}");
+}
+
+// Log-capture harness. Two subtleties force a single process-global subscriber
+// rather than a per-test `set_default`: `tracing` caches callsite interest
+// process-wide, so a `NoSubscriber` on another parallel test's thread can cache a
+// shared callsite as "off"; and a request's response log can fire on a worker
+// thread the thread-local guard wouldn't cover. So we install one global JSON
+// subscriber whose writer routes to a *thread-local* buffer, and serialize the
+// capturing tests behind a mutex so their buffers don't interleave.
+
+thread_local! {
+    static CAP_BUF: std::cell::RefCell<Option<Arc<Mutex<Vec<u8>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Serializes the two capturing tests (the global subscriber is shared).
+static CAP_LOCK: Mutex<()> = Mutex::new(());
+
+/// A `MakeWriter` routing each line into the current thread's captured buffer, if
+/// one is installed; otherwise it discards. The global subscriber uses this.
+#[derive(Clone)]
+struct ThreadLocalWriter;
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ThreadLocalWriter {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        Self
+    }
+}
+
+impl std::io::Write for ThreadLocalWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        CAP_BUF.with(|slot| {
+            if let Some(b) = slot.borrow().as_ref() {
+                b.lock().unwrap().extend_from_slice(buf);
+            }
+        });
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Install the process-global capturing subscriber exactly once, at INFO.
+fn install_capture_subscriber() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        tracing_subscriber::fmt()
+            .json()
+            .with_writer(ThreadLocalWriter)
+            .with_max_level(tracing::Level::INFO)
+            .init();
+    });
+}
+
+/// Run `body` with a fresh buffer captured on this thread, returning the emitted
+/// text. Serialized against the other capturing test. The serialization guard is
+/// intentionally held across the await: these tests run on a `current_thread`
+/// runtime, so the guard never migrates threads, and holding it is the point —
+/// it keeps the two capturing tests from interleaving on the shared subscriber.
+#[allow(clippy::await_holding_lock)]
+async fn capture_logs<F, Fut>(body: F) -> String
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    install_capture_subscriber();
+    let _serial = CAP_LOCK.lock().unwrap();
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    CAP_BUF.with(|slot| *slot.borrow_mut() = Some(buf.clone()));
+    body().await;
+    CAP_BUF.with(|slot| *slot.borrow_mut() = None);
+    String::from_utf8(buf.lock().unwrap().clone()).unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn emits_one_per_request_outcome_line_with_the_correlation_fields() {
+    let (_d, app) = populated();
+    let logs = capture_logs(|| async {
+        let req = Request::builder()
+            .uri("/livez")
+            .header("x-request-id", "line-corr")
+            .body(Body::empty())
+            .unwrap();
+        let _ = app.oneshot(req).await.unwrap();
+    })
+    .await;
+
+    let request_lines: Vec<&str> = logs
+        .lines()
+        .filter(|l| l.contains("gateway.request") && l.contains("latency_ms"))
+        .collect();
+    assert_eq!(
+        request_lines.len(),
+        1,
+        "exactly one per-request outcome line, got: {logs}"
+    );
+    let line = request_lines[0];
+    assert!(line.contains("\"status\":200"), "status field: {line}");
+    assert!(line.contains("\"method\":\"GET\""), "method field: {line}");
+    assert!(line.contains("/livez"), "route field: {line}");
+    assert!(line.contains("line-corr"), "request_id field: {line}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn upstream_failure_logs_the_event_and_error_code() {
+    let (_d, app) = populated(); // dead OTP upstream → 502
+    let logs = capture_logs(|| async {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/otp/gtfs/v1")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"query":"{stops{name}}"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    })
+    .await;
+
+    let upstream_line = logs
+        .lines()
+        .find(|l| l.contains("proxy.upstream"))
+        .unwrap_or_else(|| panic!("expected a proxy.upstream log line, got: {logs}"));
+    assert!(
+        upstream_line.contains("UPSTREAM_UNAVAILABLE"),
+        "error.code present: {upstream_line}"
+    );
+    assert!(
+        upstream_line.contains("otp"),
+        "upstream label: {upstream_line}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn geocode_upstream_failure_logs_photon_without_leaking_the_query() {
+    // The geocode hop shares upstream_error(); prove the 'photon' label is logged
+    // and — the security fix — that the user's query never reaches the log line.
+    // `populated()` points photon at a dead port, so this connect-refuses.
+    let (_d, app) = populated();
+    let logs = capture_logs(|| async {
+        let req = Request::builder()
+            .uri("/api?q=SECRET_SEARCH_TERM")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    })
+    .await;
+
+    let upstream_line = logs
+        .lines()
+        .find(|l| l.contains("proxy.upstream"))
+        .unwrap_or_else(|| panic!("expected a proxy.upstream log line, got: {logs}"));
+    assert!(
+        upstream_line.contains("photon"),
+        "upstream label: {upstream_line}"
+    );
+    assert!(
+        upstream_line.contains("UPSTREAM_UNAVAILABLE"),
+        "error.code present: {upstream_line}"
+    );
+    // The whole point: the free-text query must not appear anywhere in the log.
+    assert!(
+        !logs.contains("SECRET_SEARCH_TERM"),
+        "query leaked into the log: {logs}"
+    );
+    // Nor should a raw URL (which would carry it); we log a scrubbed kind instead.
+    assert!(
+        !upstream_line.contains("127.0.0.1"),
+        "upstream URL leaked into the log: {upstream_line}"
+    );
+}

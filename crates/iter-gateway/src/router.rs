@@ -1,12 +1,17 @@
 use axum::Router;
+use axum::extract::Request;
+use axum::http::Response;
 use axum::routing::{get, post};
+use std::time::Duration;
+use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use tracing::Span;
 
 use crate::state::AppState;
 use crate::{
     correlate, enrich, glyphs, health, live_trains, manifest, offline, overlays, proxy,
-    reliability, sprite, styles, tiles,
+    reliability, request_id, sprite, styles, tiles,
 };
 
 /// Assemble the gateway router from the capability modules' routes.
@@ -46,7 +51,56 @@ pub fn build(state: AppState) -> Router {
         .route("/offline/bundle", get(offline::bundle))
         .merge(tiles::router(&state))
         .merge(sprite::router(&state))
-        .layer(TraceLayer::new_for_http())
+        // Observability (ADR 0037): the TraceLayer opens one `gateway.request`
+        // span per request and logs exactly one INFO outcome line with status +
+        // latency; the request-id middleware runs inside that span so it records
+        // `request_id` onto it and every request-scoped line carries it.
+        //
+        // The span carries `event="gateway.request"`, the method, the path, and
+        // an empty `request_id` the middleware fills in; `on_response` logs status
+        // + latency at INFO, `on_failure` a failed response at WARN — one clean
+        // line per request without lowering the global filter.
+        .layer(
+            ServiceBuilder::new()
+                .layer(
+                    TraceLayer::new_for_http()
+                        .make_span_with(|req: &Request| {
+                            tracing::info_span!(
+                                "gateway.request",
+                                event = "gateway.request",
+                                method = %req.method(),
+                                route = %req.uri().path(),
+                                request_id = tracing::field::Empty,
+                            )
+                        })
+                        .on_request(())
+                        .on_body_chunk(())
+                        .on_eos(())
+                        .on_response(
+                            |resp: &Response<axum::body::Body>, latency: Duration, _s: &Span| {
+                                tracing::info!(
+                                    outcome = "ok",
+                                    status = resp.status().as_u16(),
+                                    latency_ms = latency.as_millis() as u64,
+                                    "request"
+                                );
+                            },
+                        )
+                        .on_failure(
+                            |err: tower_http::classify::ServerErrorsFailureClass,
+                             latency: Duration,
+                             _s: &Span| {
+                                tracing::warn!(
+                                    outcome = "fail",
+                                    error = %err,
+                                    latency_ms = latency.as_millis() as u64,
+                                    "request failed"
+                                );
+                            },
+                        ),
+                )
+                .layer(axum::middleware::from_fn(request_id::propagate)),
+        )
         // The wire contract is CORS `*`, no auth — an external proxy owns
         // production CORS/TLS/rate-limit (P3).
         .layer(CorsLayer::permissive())
