@@ -10,7 +10,7 @@ use tracing::Span;
 
 use crate::state::AppState;
 use crate::{
-    correlate, enrich, glyphs, health, live_trains, manifest, offline, overlays, proxy,
+    correlate, enrich, glyphs, health, live_trains, manifest, metrics, offline, overlays, proxy,
     reliability, request_id, sprite, styles, tiles,
 };
 
@@ -19,6 +19,9 @@ pub fn build(state: AppState) -> Router {
     Router::new()
         .route("/livez", get(health::livez))
         .route("/readyz", get(health::readyz))
+        // Internal operator metrics (ADR 0037): same proxy-gated posture as the
+        // health probes — the external proxy must not expose it publicly.
+        .route("/metrics", get(health::metrics))
         .route("/health", get(health::client_health))
         .route("/health.json", get(health::client_health))
         .route("/manifest", get(manifest::manifest))
@@ -99,7 +102,11 @@ pub fn build(state: AppState) -> Router {
                             },
                         ),
                 )
-                .layer(axum::middleware::from_fn(request_id::propagate)),
+                .layer(axum::middleware::from_fn(request_id::propagate))
+                // Per-request metrics (ADR 0037 phase 2): records the bounded
+                // {method,status} counter + latency histogram. Fail-soft — a no-op
+                // without a recorder, never alters the response.
+                .layer(axum::middleware::from_fn(metrics::record)),
         )
         // The wire contract is CORS `*`, no auth — an external proxy owns
         // production CORS/TLS/rate-limit (P3).

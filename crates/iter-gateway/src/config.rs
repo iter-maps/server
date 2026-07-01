@@ -57,6 +57,10 @@ pub struct GatewayConfig {
     /// 0033). `None` (unset/empty `WEATHER_API_URL`) disables weather entirely:
     /// no outbound call, and the factor stays neutral — the default-off posture.
     pub weather_api_url: Option<String>,
+    /// Whether the internal `/metrics` endpoint is served (ADR 0037 phase 2).
+    /// Defaults ON — it is operator-local, gated by the external proxy exactly
+    /// like `/livez`/`/readyz`. `METRICS_ENABLED=0` turns it off (404).
+    pub metrics_enabled: bool,
 }
 
 /// Abuse-protection caps — the only protection on the public, auth-less
@@ -136,6 +140,8 @@ impl GatewayConfig {
             pmtiles_bin: config::or("OFFLINE_PMTILES_BIN", "pmtiles"),
             // Default-off: unset/empty disables the weather factor entirely.
             weather_api_url: config::opt("WEATHER_API_URL"),
+            // Default-on: the internal metrics endpoint is operator-local.
+            metrics_enabled: config::flag("METRICS_ENABLED", true),
             overlay_kinds,
             region_country,
             default_lang,

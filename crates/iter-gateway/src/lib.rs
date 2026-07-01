@@ -13,6 +13,7 @@ pub mod http;
 pub mod legkey;
 pub mod live_trains;
 pub mod manifest;
+pub mod metrics;
 pub mod offline;
 pub mod overlays;
 pub mod proxy;

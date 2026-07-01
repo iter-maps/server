@@ -922,6 +922,12 @@ impl WeatherCache {
                 None => misses.push(key.clone()),
             }
         }
+        // Record the hit/miss split (ADR 0037 phase 2). `hit` = points served from
+        // the fresh cache, `miss` = points we will fetch. Bounded `outcome` label
+        // only; fail-soft, a no-op without a recorder. Zero counts are skipped so a
+        // series only appears once there is real activity.
+        record_cache_lookups("hit", resolved.len() as u64);
+        record_cache_lookups("miss", misses.len() as u64);
         if misses.is_empty() {
             return resolved;
         }
@@ -938,6 +944,21 @@ impl WeatherCache {
 /// it is always safe and keeps one panic from wedging every later request.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Record `count` weather-cache lookups with the given bounded `outcome`
+/// (`hit`|`miss`) on the `weather_cache_lookups_total` counter (ADR 0037 phase 2).
+/// A zero count is skipped so the series only appears once there is real activity.
+/// Fail-soft: a no-op without an installed recorder.
+fn record_cache_lookups(outcome: &'static str, count: u64) {
+    if count == 0 {
+        return;
+    }
+    metrics::counter!(
+        iter_core::metrics::WEATHER_CACHE_LOOKUPS_TOTAL,
+        iter_core::metrics::LABEL_OUTCOME => outcome,
+    )
+    .increment(count);
 }
 
 #[cfg(test)]

@@ -341,6 +341,15 @@ fn upstream_error(e: &reqwest::Error, upstream: &str) -> ApiError {
         cause = failure_kind(e),
         "upstream request failed"
     );
+    // Mirror the WARN as a metric (ADR 0037 phase 2). Bounded labels only:
+    // `upstream` is the small engine set, `code` the stable `ApiError` code — never
+    // the URL/query. Fail-soft: a no-op without a recorder, never alters the error.
+    metrics::counter!(
+        iter_core::metrics::UPSTREAM_ERRORS_TOTAL,
+        iter_core::metrics::LABEL_UPSTREAM => upstream.to_owned(),
+        iter_core::metrics::LABEL_CODE => err.code.clone(),
+    )
+    .increment(1);
     err
 }
 

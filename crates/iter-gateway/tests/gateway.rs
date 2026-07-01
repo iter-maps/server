@@ -45,6 +45,8 @@ fn config_for(data_dir: PathBuf) -> GatewayConfig {
         pmtiles_bin: "iter-pmtiles-absent".to_string(),
         // Weather default-off unless a test opts in via a stub base URL.
         weather_api_url: None,
+        // The internal metrics endpoint is on by default (operator-local).
+        metrics_enabled: true,
         data_dir,
     }
 }
@@ -2013,4 +2015,278 @@ async fn geocode_upstream_failure_logs_photon_without_leaking_the_query() {
         !upstream_line.contains("127.0.0.1"),
         "upstream URL leaked into the log: {upstream_line}"
     );
+}
+
+// --- metrics: internal /metrics endpoint + recording (ADR 0037 phase 2) ------
+//
+// The Prometheus recorder is a process-global singleton, so it is installed ONCE
+// here and shared by every metrics test. Counters therefore accumulate across
+// tests; assertions read a specific series value out of the /metrics text and
+// check the DELTA around an action, never an absolute count.
+
+/// Install the process-global Prometheus recorder exactly once, so `/metrics`
+/// renders real series in this test binary (the binary never calls
+/// `telemetry::init`). Idempotent — mirrors what `init` does at startup.
+fn ensure_recorder() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        iter_core::metrics::install_recorder();
+    });
+}
+
+/// Scrape `GET /metrics` and return its body text. Pins the FULL Prometheus
+/// exposition content-type, including the `version=0.0.4` parameter scrapers use
+/// to select the format — a regression that dropped it would fail every scrape.
+async fn metrics_text(app: &Router) -> String {
+    let (status, ct, body) = send(app, get("/metrics")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        ct.as_deref(),
+        Some("text/plain; version=0.0.4"),
+        "content-type must pin the Prometheus exposition version"
+    );
+    String::from_utf8(body).unwrap()
+}
+
+/// The value of the first sample line for `metric` whose label section contains
+/// every `substr` in `label_substrs`, or `0.0` when no such series exists yet.
+/// Prometheus counter lines look like `name{a="1",b="2"} 3` — we match the name
+/// and the required label fragments, then parse the trailing number.
+fn metric_value(text: &str, metric: &str, label_substrs: &[&str]) -> f64 {
+    for line in text.lines() {
+        if line.starts_with('#') || !line.starts_with(metric) {
+            continue;
+        }
+        // The char right after the name must be `{` or a space, so `foo_total` does
+        // not also match `foo_total_extra`.
+        let after = &line[metric.len()..];
+        if !(after.starts_with('{') || after.starts_with(' ')) {
+            continue;
+        }
+        if label_substrs.iter().all(|s| line.contains(s)) {
+            if let Some(v) = line.rsplit(' ').next().and_then(|n| n.parse::<f64>().ok()) {
+                return v;
+            }
+        }
+    }
+    0.0
+}
+
+#[tokio::test]
+async fn metrics_endpoint_returns_prometheus_text() {
+    ensure_recorder();
+    let (_d, app) = populated();
+    // Drive a little activity so at least one series exists.
+    let _ = send(&app, get("/livez")).await;
+    let text = metrics_text(&app).await;
+    // The HTTP request counter appears with its bounded {method,status} labels.
+    assert!(
+        text.contains("http_requests_total"),
+        "expected the request counter: {text}"
+    );
+    assert!(text.contains("method=\"GET\""), "method label: {text}");
+    assert!(text.contains("status=\"200\""), "status label: {text}");
+    // The per-request latency histogram also renders, labeled by `method` only —
+    // never a path/query label (the histogram series is otherwise untested).
+    assert!(
+        text.contains("http_request_duration_seconds"),
+        "expected the latency histogram: {text}"
+    );
+    for line in text.lines() {
+        if line.starts_with("http_request_duration_seconds") {
+            assert!(
+                !line.contains("route=") && !line.contains("path=") && !line.contains("query="),
+                "histogram must carry no path/query label: {line}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn metrics_endpoint_never_panics_before_any_activity() {
+    ensure_recorder();
+    let (_d, app) = populated();
+    // Even with no prior traffic in scope, rendering must be a valid 200 text body,
+    // never a panic. (Other parallel tests may have recorded, so we don't assert
+    // emptiness — only that it renders.)
+    let text = metrics_text(&app).await;
+    assert!(text.is_empty() || text.contains('#') || text.contains("_total"));
+}
+
+#[tokio::test]
+async fn metrics_endpoint_is_404_when_disabled() {
+    ensure_recorder();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config_for(dir.path().to_path_buf());
+    cfg.metrics_enabled = false;
+    let app = router::build(AppState::new(cfg).unwrap());
+    let (status, _, _) = send(&app, get("/metrics")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn http_requests_total_increments_with_bounded_method_and_status() {
+    ensure_recorder();
+    let (_d, app) = populated();
+    // Baseline for the GET/200 series, then a known 200 request, then re-read.
+    let before = metric_value(
+        &metrics_text(&app).await,
+        "http_requests_total",
+        &["method=\"GET\"", "status=\"200\""],
+    );
+    let _ = send(&app, get("/livez")).await;
+    let after = metric_value(
+        &metrics_text(&app).await,
+        "http_requests_total",
+        &["method=\"GET\"", "status=\"200\""],
+    );
+    assert!(
+        after >= before + 1.0,
+        "GET/200 counter should have advanced: {before} -> {after}"
+    );
+}
+
+#[tokio::test]
+async fn upstream_errors_total_increments_on_a_failing_upstream() {
+    ensure_recorder();
+    let (_d, app) = populated(); // dead OTP upstream → 502 UPSTREAM_UNAVAILABLE
+    let labels = ["upstream=\"otp\"", "code=\"UPSTREAM_UNAVAILABLE\""];
+    let before = metric_value(&metrics_text(&app).await, "upstream_errors_total", &labels);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/otp/gtfs/v1")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"query":"{stops{name}}"}"#))
+        .unwrap();
+    let (status, _, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let text = metrics_text(&app).await;
+    // Presence, not just delta: a metric-name typo would leave `metric_value`'s
+    // silent 0.0 fallback hiding behind the delta, so pin the series name too.
+    assert!(
+        text.contains("upstream_errors_total"),
+        "the upstream error counter must be present: {text}"
+    );
+    let after = metric_value(&text, "upstream_errors_total", &labels);
+    assert!(
+        after >= before + 1.0,
+        "otp/UPSTREAM_UNAVAILABLE counter should have advanced: {before} -> {after}"
+    );
+}
+
+#[tokio::test]
+async fn upstream_errors_total_increments_for_viaggiatreno() {
+    ensure_recorder();
+    // `populated()` points the live-trains driver at a dead upstream (127.0.0.1:1),
+    // so a valid station board fails as UPSTREAM_UNAVAILABLE — the catalog's
+    // `upstream=viaggiatreno` series, previously documented but never recorded.
+    let (_d, app) = populated();
+    let labels = ["upstream=\"viaggiatreno\"", "code=\"UPSTREAM_UNAVAILABLE\""];
+    let before = metric_value(&metrics_text(&app).await, "upstream_errors_total", &labels);
+    let (status, _, _) = send(&app, get("/trenitalia/departures?station=S08409")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let after = metric_value(&metrics_text(&app).await, "upstream_errors_total", &labels);
+    assert!(
+        after >= before + 1.0,
+        "viaggiatreno/UPSTREAM_UNAVAILABLE counter should have advanced: {before} -> {after}"
+    );
+}
+
+#[tokio::test]
+async fn weather_cache_hit_and_miss_are_counted() {
+    ensure_recorder();
+    // Drive the real rerank path so `get_or_fetch_journey` records hit/miss. The
+    // first request is all misses (cold cache); a second identical request over the
+    // same cells is all hits (the forecasts were stored), so both series advance.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let (weather, _seen, _hw) = weather_stub(StatusCode::OK, FAIR_FORECAST).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    let miss0 = metric_value(
+        &metrics_text(&app).await,
+        "weather_cache_lookups_total",
+        &["outcome=\"miss\""],
+    );
+    let (status, _, _) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    let text = metrics_text(&app).await;
+    // Presence alongside the delta, so a name typo can't hide behind the 0.0 fallback.
+    assert!(
+        text.contains("weather_cache_lookups_total"),
+        "the weather cache counter must be present: {text}"
+    );
+    let miss1 = metric_value(&text, "weather_cache_lookups_total", &["outcome=\"miss\""]);
+    assert!(
+        miss1 >= miss0 + 1.0,
+        "the cold journey should record at least one miss: {miss0} -> {miss1}"
+    );
+
+    // Second identical journey: the same cells are now cached → hits advance.
+    let hit0 = metric_value(
+        &metrics_text(&app).await,
+        "weather_cache_lookups_total",
+        &["outcome=\"hit\""],
+    );
+    let (status, _, _) = send(&app, routing_req_profile("comfort")).await;
+    assert_eq!(status, StatusCode::OK);
+    let hit1 = metric_value(
+        &metrics_text(&app).await,
+        "weather_cache_lookups_total",
+        &["outcome=\"hit\""],
+    );
+    assert!(
+        hit1 >= hit0 + 1.0,
+        "the warm journey should record at least one hit: {hit0} -> {hit1}"
+    );
+}
+
+#[tokio::test]
+async fn metrics_labels_never_carry_raw_path_query_or_coordinates() {
+    ensure_recorder();
+    // Drive requests carrying a distinctive path/query token and precise coords, then
+    // prove NONE of that user data ever surfaces as a metric label — the cardinality
+    // guard (ADR 0024/0037): labels are the bounded {method,status,upstream,code,
+    // outcome} set only.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, WEATHER_PLAN, "application/json").await;
+    let (weather, _seen, _hw) = weather_stub(StatusCode::OK, FAIR_FORECAST).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp_and_weather(otp, weather, dir.path().to_path_buf());
+
+    // A GET with a distinctive query token, plus the rerank path (precise coords in
+    // the plan body: 41.90278 / 12.49636).
+    let _ = send(&app, get("/reliability/DISTINCTIVE_ROUTE_TOKEN/0/99999")).await;
+    let _ = send(&app, routing_req_profile("comfort")).await;
+
+    let text = metrics_text(&app).await;
+    for forbidden in [
+        "DISTINCTIVE_ROUTE_TOKEN", // a raw path segment
+        "reliability",             // a route name
+        "41.90278",                // a precise coordinate
+        "12.49636",
+        "rerank",  // a query flag
+        "comfort", // a query value
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "metric label leaked user/path data {forbidden:?}: {text}"
+        );
+    }
+    // Sanity: the intended bounded labels ARE present.
+    assert!(text.contains("method=\""), "method label present");
+    assert!(text.contains("status=\""), "status label present");
+}
+
+#[tokio::test]
+async fn request_body_and_status_are_unaffected_by_metrics() {
+    ensure_recorder();
+    // Fail-soft: with metrics on, a plain proxied request still returns the exact
+    // upstream body and status — recording never alters the response.
+    let (otp, _ho) = otp_stub_ct(StatusCode::OK, TWO_ITIN_PLAN, "application/json").await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway_with_otp(otp, dir.path().to_path_buf());
+    let (status, _, body) = send(&app, routing_req_plain()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, TWO_ITIN_PLAN.as_bytes());
 }

@@ -56,9 +56,37 @@ on the self-hoster's own host.
 `route`/`status`/`request_id`/… context fields), the `ITER_LOG_FORMAT=json`
 switch, and request correlation via `x-request-id` (minted at the gateway edge,
 accepting a W3C `traceparent`, propagated to the engines) are defined in
-**ADR 0037** and documented on `iter_core::telemetry`. Metrics (an internal
-Prometheus `/metrics` endpoint) are a planned later phase under the same
-operator-local, never-phone-home rule.
+**ADR 0037** and documented on `iter_core::telemetry`.
+
+#### Metrics — internal Prometheus `/metrics` endpoint
+
+Metrics land as **ADR 0037 phase 2**, under the same operator-local,
+never-phone-home rule. The gateway installs a process-wide Prometheus recorder at
+startup (via `iter_core::telemetry::init` → `iter_core::metrics`) and exposes a
+`GET /metrics` endpoint rendering the Prometheus text exposition (version 0.0.4).
+
+- **Internal only.** `/metrics` carries no user data, but it is
+  operator-monitoring surface, **not** for public exposure. It shares the exact
+  posture of the `/livez` / `/readyz` probes: the external proxy (P3) gates it and
+  must **not** route it publicly. A self-hoster who wants it off entirely can set
+  `METRICS_ENABLED=0` (it then returns `404`); the default is on.
+- **Recording is fail-soft.** It never changes, slows, or breaks a request/
+  response, and is a no-op when no recorder is installed.
+- **Low-cardinality labels ONLY.** Labels are a bounded set — never the raw
+  request path, query string, coordinates, or any user value.
+- **Self-scrapes count.** `/metrics` is wrapped by the request middleware, so each
+  scrape increments `http_requests_total{method="GET",status="200"}`. This is
+  standard Prometheus self-scrape behavior (bounded labels, no cardinality or
+  privacy concern) — subtract the scrape rate if you need pure client traffic.
+
+Metric catalog (names/labels/help are defined once in `iter_core::metrics`):
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `http_requests_total` | counter | `method`, `status` | one increment per served request; `method` is normalized to the known HTTP verbs (else `OTHER`), `status` is the numeric HTTP code |
+| `http_request_duration_seconds` | histogram | `method` | per-request wall latency (seconds), the same value the request-outcome log line reports |
+| `upstream_errors_total` | counter | `upstream`, `code` | a reverse-proxy upstream failure; `upstream=otp\|photon\|viaggiatreno`, `code` = the stable `ApiError` code (e.g. `UPSTREAM_UNAVAILABLE`, `TIMEOUT`) |
+| `weather_cache_lookups_total` | counter | `outcome` (`hit\|miss`) | weather-forecast cache lookups on the opt-in rerank path — `hit` served from cache, `miss` fetched upstream |
 
 ### (c) Product / usage analytics — none by default
 

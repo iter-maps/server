@@ -1,5 +1,6 @@
 //! Orchestration probes. Liveness is process-up; readiness gates traffic on the
-//! artifact tree being present.
+//! artifact tree being present. The internal `/metrics` endpoint lives here too:
+//! it shares the same operator-local posture as `/livez`/`/readyz` (ADR 0037).
 
 use axum::Json;
 use axum::extract::State;
@@ -29,6 +30,27 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
         _ => StatusCode::OK,
     };
     (code, Json(report))
+}
+
+/// **Internal** `GET /metrics`: the Prometheus exposition of the operator-local
+/// metrics (ADR 0037 phase 2). This is NOT for public exposure — it carries no
+/// user data, but it is operator-monitoring surface gated behind the external
+/// proxy exactly like `/livez`/`/readyz`; the proxy must not route it publicly.
+///
+/// Renders the process-wide recorder's snapshot as Prometheus text 0.0.4. Total
+/// and fail-soft: when metrics are disabled (`METRICS_ENABLED=0`) it 404s, and
+/// when no recorder handle is installed (a lost install race, or metrics off) it
+/// returns an empty body rather than panicking — a scrape simply sees no series.
+pub async fn metrics(State(state): State<AppState>) -> Response {
+    if !state.cfg.metrics_enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    // Prometheus text exposition, version 0.0.4 (the format the handle renders).
+    let ct = (header::CONTENT_TYPE, "text/plain; version=0.0.4");
+    match iter_core::metrics::prometheus_handle() {
+        Some(handle) => ([ct], handle.render()).into_response(),
+        None => ([ct], String::new()).into_response(),
+    }
 }
 
 /// Client-facing `GET /health` (and `/health.json`): the freshness document the

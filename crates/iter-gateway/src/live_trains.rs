@@ -26,9 +26,23 @@ use crate::state::AppState;
 fn provider_err(e: anyhow::Error) -> ApiErr {
     let msg = e.to_string();
     let api = if msg.contains("must match") {
+        // A station-id validation failure is the caller's fault (400), not an
+        // upstream failure — it stays off `upstream_errors_total`.
         ApiError::bad_request(msg)
     } else {
-        ApiError::new(503, iter_core::code::UPSTREAM_UNAVAILABLE, msg)
+        let err = ApiError::new(503, iter_core::code::UPSTREAM_UNAVAILABLE, msg);
+        // Mirror the genuine upstream failure as a metric, matching the catalog's
+        // `upstream=viaggiatreno` (ADR 0037 phase 2). Bounded labels only:
+        // `upstream` is the fixed engine name, `code` the stable `ApiError` code —
+        // never the message/query. Fail-soft: a no-op without a recorder, and it
+        // never alters the error surfaced to the caller.
+        metrics::counter!(
+            iter_core::metrics::UPSTREAM_ERRORS_TOTAL,
+            iter_core::metrics::LABEL_UPSTREAM => "viaggiatreno",
+            iter_core::metrics::LABEL_CODE => err.code.clone(),
+        )
+        .increment(1);
+        err
     };
     ApiErr::from(api)
 }

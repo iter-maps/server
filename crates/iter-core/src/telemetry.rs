@@ -29,8 +29,12 @@
 //! Correlation: the gateway mints/accepts an `x-request-id` per request
 //! (accepting a W3C `traceparent` trace-id), records it as `request_id` on the
 //! request span so every line during that request carries it, echoes it on the
-//! response, and propagates it to the engines (ADR 0037). Metrics (a Prometheus
-//! `/metrics` endpoint) are a later phase and deliberately absent here.
+//! response, and propagates it to the engines (ADR 0037).
+//!
+//! Metrics ([`crate::metrics`], ADR 0037 phase 2) are the sibling concern: [`init`]
+//! installs the process-wide Prometheus recorder so the gateway can serve an
+//! **internal** `/metrics` endpoint. Same posture as the logs — operator-local,
+//! never phone-home — and fail-soft: a lost install race logs and continues.
 
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::{Format, Json, JsonFields, Writer};
@@ -159,6 +163,11 @@ pub fn init(service: &str) {
     }
 
     tracing::info!(event = "service.start", service, "logging initialized");
+
+    // Install the Prometheus recorder so the gateway can serve an internal
+    // `/metrics` endpoint (ADR 0037 phase 2). Idempotent + fail-soft: a lost race
+    // logs and continues, and the metric macros are no-ops until a recorder exists.
+    crate::metrics::install_recorder();
 }
 
 #[cfg(test)]

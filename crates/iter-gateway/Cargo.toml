@@ -31,6 +31,7 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+metrics = { workspace = true }
 anyhow = { workspace = true }
 jiff = { workspace = true }
 tempfile = { workspace = true }
